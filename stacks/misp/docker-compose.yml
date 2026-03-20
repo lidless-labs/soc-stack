@@ -1,0 +1,64 @@
+# MISP - Threat Intelligence Platform
+# Based on the official misp-docker project with SOC Stack defaults.
+#
+# Usage:
+#   cp config.env.template config.env
+#   docker compose up -d
+#   ./setup.sh
+
+services:
+  misp-core:
+    image: ghcr.io/misp/misp-docker/misp-core:latest
+    hostname: misp
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      - "80:80"
+    environment:
+      MISP_ADMIN_EMAIL: "${MISP_ADMIN_EMAIL:-admin@misp.local}"
+      MISP_ADMIN_PASSPHRASE: "${MISP_ADMIN_PASSPHRASE:-admin}"
+      MISP_BASEURL: "${MISP_BASEURL:-https://localhost}"
+    volumes:
+      - misp-data:/var/www/MISP
+    depends_on:
+      misp-db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sfk https://localhost/users/login || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  misp-db:
+    image: mariadb:10.11
+    hostname: misp-db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: misp
+      MYSQL_USER: misp
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:-misp-secret}"
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:-root-secret}"
+      # CRITICAL for 4GB VMs: default InnoDB buffer is 2GB, causes OOM
+      INNODB_BUFFER_POOL_SIZE: "${INNODB_BUFFER_POOL_SIZE:-512M}"
+    volumes:
+      - misp-db-data:/var/lib/mysql
+    command: >
+      --innodb-buffer-pool-size=${INNODB_BUFFER_POOL_SIZE:-512M}
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    hostname: redis
+    restart: unless-stopped
+
+volumes:
+  misp-data:
+  misp-db-data:

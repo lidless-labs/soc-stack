@@ -1,0 +1,35 @@
+#cloud-config
+# SOC Stack - Base user-data template
+# Replace <PLACEHOLDERS> before building the ISO.
+
+hostname: <VM_NAME>
+manage_etc_hosts: true
+
+users:
+  - name: admin
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    lock_passwd: false
+    # Generate hash: python3 -c "import crypt; print(crypt.crypt('yourpassword', crypt.mksalt(crypt.METHOD_SHA512)))"
+    passwd: <PASSWORD_HASH>
+    ssh_authorized_keys:
+      - <SSH_PUBLIC_KEY>
+
+packages:
+  - docker.io
+  - curl
+  - git
+  - htop
+  - jq
+  - net-tools
+
+runcmd:
+  - systemctl enable docker
+  - systemctl start docker
+  - usermod -aG docker admin
+  # Install Docker Compose v2 (NOT the v1 apt package docker-compose)
+  - mkdir -p /usr/local/lib/docker/cli-plugins
+  - curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" -o /usr/local/lib/docker/cli-plugins/docker-compose
+  - chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+ssh_pwauth: true

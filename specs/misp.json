@@ -1,0 +1,31 @@
+{
+  "name": "misp",
+  "description": "MISP threat intelligence platform",
+  "vm": {
+    "name": "misp",
+    "cores": 2,
+    "ram_gb": 4,
+    "disk_gb": 40
+  },
+  "stack": "stacks/misp",
+  "services": {
+    "misp": {
+      "port_https": 443,
+      "port_http": 80,
+      "version": "latest",
+      "default_user": "admin@misp.local",
+      "default_password": "admin"
+    },
+    "mariadb": {
+      "version": "10.11",
+      "notes": "Set INNODB_BUFFER_POOL_SIZE=512M for 4GB VMs"
+    },
+    "redis": {
+      "version": "7"
+    }
+  },
+  "gotchas": [
+    "INNODB_BUFFER_POOL_SIZE must be 512M on 4GB VMs (default 2GB causes OOM)",
+    "Advanced authkeys enabled by default. Use 'cake user change_authkey' to generate keys"
+  ]
+}

@@ -1,0 +1,13 @@
+# SOC Stack - Network config for Hyper-V VMs
+#
+# CRITICAL: Without this file, VMs get zero network connectivity.
+# The hv_netvsc driver match is required because Hyper-V NICs don't
+# have consistent interface names across cloud image versions.
+
+version: 2
+ethernets:
+  id0:
+    match:
+      driver: hv_netvsc
+    dhcp4: true
+    dhcp6: false

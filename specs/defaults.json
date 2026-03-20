@@ -1,0 +1,10 @@
+{
+  "vm": {
+    "switch": "DNS-NIC-Switch",
+    "cloud_image": "C:\\Users\\<USERNAME>\\Downloads\\ubuntu-24.04-cloud.img",
+    "vhdx_path": "C:\\ProgramData\\Microsoft\\Windows\\Virtual Hard Disks",
+    "user": "admin",
+    "ssh_key_file": "~/.ssh/id_ed25519.pub"
+  },
+  "cloud_image_url": "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+}

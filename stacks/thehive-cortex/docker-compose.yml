@@ -1,0 +1,85 @@
+# TheHive 5.4 + Cortex 3.1.8
+# Backend: Cassandra 4.1 (TheHive data) + Elasticsearch 7.17 (shared index)
+#
+# Usage:
+#   cp config.env.template config.env   # edit passwords
+#   docker compose up -d
+#   ./setup.sh                          # automates account creation + API keys
+
+services:
+  cassandra:
+    image: cassandra:4.1
+    hostname: cassandra
+    restart: unless-stopped
+    environment:
+      MAX_HEAP_SIZE: 1G
+      HEAP_NEWSIZE: 256M
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status | grep -q 'UN'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.18
+    hostname: elasticsearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+      xpack.security.enabled: "false"
+    volumes:
+      - elastic-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  cortex:
+    image: thehiveproject/cortex:3.1.8-1
+    hostname: cortex
+    restart: unless-stopped
+    ports:
+      - "9001:9001"
+    environment:
+      job_directory: /opt/cortex/jobs
+    volumes:
+      - cortex-jobs:/opt/cortex/jobs
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  thehive:
+    image: strangebee/thehive:5.4
+    hostname: thehive
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    # Cortex integration is added by setup.sh after API keys are generated.
+    # Initial boot uses minimal config:
+    command:
+      - "--secret"
+      - "${THEHIVE_SECRET:-soc-stack-change-me}"
+      - "--cql-hostnames"
+      - "cassandra"
+      - "--index-backend"
+      - "elasticsearch"
+      - "--es-hostnames"
+      - "elasticsearch"
+    depends_on:
+      cassandra:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      cortex:
+        condition: service_started
+
+volumes:
+  cassandra-data:
+  elastic-data:
+  cortex-jobs:

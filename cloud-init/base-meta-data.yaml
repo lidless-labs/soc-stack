@@ -1,0 +1,5 @@
+# SOC Stack - Base meta-data template
+# Replace <PLACEHOLDERS> before building the ISO.
+
+instance-id: <VM_NAME>-001
+local-hostname: <VM_NAME>

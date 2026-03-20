@@ -1,0 +1,22 @@
+node_modules/
+dist/
+.env
+.env.*
+*.log
+.DS_Store
+coverage/
+.venv/
+__pycache__/
+*.pyc
+.cache/
+
+# Stack secrets (config.env.template is committed, config.env is not)
+**/config.env
+**/api-keys.txt
+
+FRONTEND_DESIGN.md
+POLISH_NOTES.md
+CLAUDE.md
+TASK_*.md
+IMPLEMENTATION_*.md
+*_SUMMARY.md

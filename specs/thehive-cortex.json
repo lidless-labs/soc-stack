@@ -1,0 +1,31 @@
+{
+  "name": "thehive-cortex",
+  "description": "TheHive 5.4 + Cortex 3.1.8 incident response stack",
+  "vm": {
+    "name": "thehive-cortex",
+    "cores": 2,
+    "ram_gb": 4,
+    "disk_gb": 40
+  },
+  "stack": "stacks/thehive-cortex",
+  "services": {
+    "thehive": {
+      "port": 9000,
+      "version": "5.4",
+      "default_user": "admin@thehive.local",
+      "default_password": "secret"
+    },
+    "cortex": {
+      "port": 9001,
+      "version": "3.1.8",
+      "notes": "First-user endpoint is open when no users exist"
+    },
+    "elasticsearch": {
+      "port": 9200,
+      "version": "7.17"
+    },
+    "cassandra": {
+      "version": "4.1"
+    }
+  }
+}

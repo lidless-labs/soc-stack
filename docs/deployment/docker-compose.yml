@@ -1,0 +1,172 @@
+# S³ Stack - Docker Compose
+# Spins up the full SOC platform for development/demo
+#
+# Usage:
+#   docker compose up -d
+#   docker compose logs -f
+#   docker compose down -v  (destroy volumes)
+#
+# Access:
+#   Wazuh Dashboard:  https://localhost:443     (admin/SecretPassword)
+#   TheHive:          http://localhost:9000      (admin@thehive.local/secret)
+#   Cortex:           http://localhost:9001
+#   MISP:             https://localhost:8443     (admin@admin.test/admin)
+
+version: "3.8"
+
+services:
+  # ─── Wazuh ──────────────────────────────────────────
+  wazuh-manager:
+    image: wazuh/wazuh-manager:4.9.2
+    hostname: wazuh-manager
+    restart: unless-stopped
+    ports:
+      - "1514:1514/udp"   # Agent registration
+      - "1515:1515"       # Agent enrollment
+      - "55000:55000"     # Wazuh API
+      - "514:514/udp"     # Syslog input
+    environment:
+      INDEXER_URL: https://wazuh-indexer:9200
+      INDEXER_USERNAME: admin
+      INDEXER_PASSWORD: SecretPassword
+      FILEBEAT_SSL_VERIFICATION_MODE: none
+    volumes:
+      - wazuh-api-config:/var/ossec/api/configuration
+      - wazuh-etc:/var/ossec/etc
+      - wazuh-logs:/var/ossec/logs
+      - wazuh-queue:/var/ossec/queue
+    depends_on:
+      - wazuh-indexer
+
+  wazuh-indexer:
+    image: wazuh/wazuh-indexer:4.9.2
+    hostname: wazuh-indexer
+    restart: unless-stopped
+    environment:
+      OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"
+      bootstrap.memory_lock: "true"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - wazuh-indexer-data:/var/lib/wazuh-indexer
+
+  wazuh-dashboard:
+    image: wazuh/wazuh-dashboard:4.9.2
+    hostname: wazuh-dashboard
+    restart: unless-stopped
+    ports:
+      - "443:5601"
+    environment:
+      INDEXER_USERNAME: admin
+      INDEXER_PASSWORD: SecretPassword
+      WAZUH_API_URL: https://wazuh-manager
+      DASHBOARD_USERNAME: kibanaserver
+      DASHBOARD_PASSWORD: kibanaserver
+    depends_on:
+      - wazuh-indexer
+      - wazuh-manager
+
+  # ─── TheHive + Cortex ──────────────────────────────
+  thehive:
+    image: strangebee/thehive:5.3
+    hostname: thehive
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    environment:
+      TH_SECRET: "soc-stack-secret-key-change-me"
+      TH_NO_CONFIG_CORTEX: 0
+      TH_CORTEX_URL: http://cortex:9001
+    volumes:
+      - thehive-data:/opt/thp/thehive/data
+      - thehive-index:/opt/thp/thehive/index
+    depends_on:
+      - cassandra
+      - elasticsearch
+      - cortex
+
+  cortex:
+    image: thehiveproject/cortex:3.1.8
+    hostname: cortex
+    restart: unless-stopped
+    ports:
+      - "9001:9001"
+    environment:
+      job_directory: /opt/cortex/jobs
+    volumes:
+      - cortex-data:/opt/cortex/jobs
+    depends_on:
+      - elasticsearch
+
+  # ─── MISP ──────────────────────────────────────────
+  misp-core:
+    image: ghcr.io/misp/misp-docker/misp-core:latest
+    hostname: misp
+    restart: unless-stopped
+    ports:
+      - "8443:443"
+      - "8080:80"
+    environment:
+      MISP_ADMIN_EMAIL: admin@admin.test
+      MISP_ADMIN_PASSPHRASE: admin
+      MISP_BASEURL: https://localhost:8443
+    volumes:
+      - misp-data:/var/www/MISP
+    depends_on:
+      - misp-db
+      - redis
+
+  misp-db:
+    image: mariadb:10.11
+    hostname: misp-db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: misp
+      MYSQL_USER: misp
+      MYSQL_PASSWORD: misp-secret
+      MYSQL_ROOT_PASSWORD: root-secret
+    volumes:
+      - misp-db-data:/var/lib/mysql
+
+  # ─── Supporting Services ───────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.18
+    hostname: elasticsearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+      xpack.security.enabled: "false"
+    volumes:
+      - elastic-data:/usr/share/elasticsearch/data
+
+  cassandra:
+    image: cassandra:4.1
+    hostname: cassandra
+    restart: unless-stopped
+    environment:
+      MAX_HEAP_SIZE: 1G
+      HEAP_NEWSIZE: 256M
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+
+  redis:
+    image: redis:7-alpine
+    hostname: redis
+    restart: unless-stopped
+
+volumes:
+  wazuh-api-config:
+  wazuh-etc:
+  wazuh-logs:
+  wazuh-queue:
+  wazuh-indexer-data:
+  thehive-data:
+  thehive-index:
+  cortex-data:
+  elastic-data:
+  cassandra-data:
+  misp-data:
+  misp-db-data:
