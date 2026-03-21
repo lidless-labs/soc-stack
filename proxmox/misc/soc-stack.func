@@ -1,0 +1,272 @@
+#!/usr/bin/env bash
+# ------------------------------------------------------------------------------
+# SOC Stack - Shared Proxmox Helper Functions
+# Sourced by ct/*.sh scripts. Provides LXC creation, whiptail menus,
+# logging, and install orchestration.
+#
+# Pattern follows community-scripts.org conventions.
+# MIT License
+# ------------------------------------------------------------------------------
+
+set -euo pipefail
+
+# ── Colors & Symbols ─────────────────────────────────────────────────────────
+RD="\033[01;31m"
+GN="\033[1;92m"
+YW="\033[33m"
+CY="\033[36m"
+BL="\033[1;34m"
+CL="\033[m"
+BFR="\\r\\033[K"
+CM="${GN}✓${CL}"
+CROSS="${RD}✗${CL}"
+INFO="${CY}ℹ${CL}"
+WARN="${YW}⚠${CL}"
+TAB="  "
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+LOG_FILE="/var/log/soc-stack-install.log"
+touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/soc-stack-install.log"
+
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
+
+msg_info() {
+    echo -ne " ${INFO} ${1}..."
+    log "INFO: $1"
+}
+
+msg_ok() {
+    echo -e "${BFR} ${CM} ${1}"
+    log "OK: $1"
+}
+
+msg_error() {
+    echo -e "${BFR} ${CROSS} ${1}"
+    log "ERROR: $1"
+}
+
+msg_warn() {
+    echo -e "${BFR} ${WARN} ${1}"
+    log "WARN: $1"
+}
+
+# ── Pre-flight Checks ────────────────────────────────────────────────────────
+check_root() {
+    if [[ "$(id -u)" -ne 0 ]]; then
+        msg_error "This script must be run as root on the Proxmox host"
+        exit 1
+    fi
+}
+
+check_proxmox() {
+    if ! command -v pveversion &>/dev/null; then
+        msg_error "Proxmox VE not detected. Run this on the PVE host."
+        exit 1
+    fi
+    local pve_ver
+    pve_ver="$(pveversion --verbose | head -1 | grep -oP '\d+\.\d+')"
+    msg_ok "Proxmox VE ${pve_ver} detected"
+}
+
+check_deps() {
+    for dep in whiptail wget curl jq openssl; do
+        if ! command -v "$dep" &>/dev/null; then
+            msg_info "Installing ${dep}"
+            apt-get update -qq &>/dev/null
+            apt-get install -y -qq "$dep" &>/dev/null
+            msg_ok "Installed ${dep}"
+        fi
+    done
+}
+
+# ── VMID & Template Helpers ───────────────────────────────────────────────────
+get_next_vmid() {
+    pvesh get /cluster/nextid 2>/dev/null | tr -d '"'
+}
+
+ensure_template() {
+    local storage="${1:-local}"
+    local template="ubuntu-24.04-standard_24.04-2_amd64.tar.zst"
+    if ! pveam list "$storage" 2>/dev/null | grep -q "ubuntu-24.04"; then
+        msg_info "Downloading Ubuntu 24.04 LXC template"
+        pveam update &>/dev/null
+        pveam download "$storage" "$template" &>/dev/null
+        msg_ok "Downloaded Ubuntu 24.04 template"
+    fi
+}
+
+# ── Whiptail Menus ────────────────────────────────────────────────────────────
+show_header() {
+    local app="$1"
+    local desc="$2"
+    whiptail --title "SOC Stack: ${app}" --msgbox "\
+  SOC Stack - ${app}
+
+  ${desc}
+
+  This script will create an LXC container on this
+  Proxmox host and install ${app} with Docker Compose.
+
+  Source: github.com/solomonneas/soc-stack
+" 16 64
+}
+
+select_settings() {
+    local app="$1"
+    local def_cores="${2:-2}"
+    local def_ram="${3:-4096}"
+    local def_disk="${4:-20}"
+
+    # Use defaults or advanced?
+    if whiptail --title "SOC Stack: ${app}" \
+        --yesno "Use default settings?\n\n  CPU: ${def_cores} cores\n  RAM: $((def_ram / 1024))GB\n  Disk: ${def_disk}GB\n  OS: Ubuntu 24.04\n  DHCP: yes" 16 58; then
+        CT_CORES=$def_cores
+        CT_RAM=$def_ram
+        CT_DISK=$def_disk
+        return
+    fi
+
+    CT_CORES=$(whiptail --title "SOC Stack: ${app}" \
+        --inputbox "CPU cores:" 10 58 "$def_cores" 3>&1 1>&2 2>&3) || exit 1
+
+    CT_RAM=$(whiptail --title "SOC Stack: ${app}" \
+        --inputbox "RAM in MB:" 10 58 "$def_ram" 3>&1 1>&2 2>&3) || exit 1
+
+    CT_DISK=$(whiptail --title "SOC Stack: ${app}" \
+        --inputbox "Disk in GB:" 10 58 "$def_disk" 3>&1 1>&2 2>&3) || exit 1
+}
+
+select_storage() {
+    local storages
+    storages=$(pvesm status 2>/dev/null | awk 'NR>1 && $2 != "dir" {print $1}' | head -10)
+    [[ -z "$storages" ]] && storages=$(pvesm status 2>/dev/null | awk 'NR>1 {print $1}' | head -10)
+
+    local items=() first="ON"
+    while IFS= read -r s; do
+        [[ -z "$s" ]] && continue
+        items+=("$s" "" "$first")
+        first="OFF"
+    done <<< "$storages"
+
+    if [[ ${#items[@]} -eq 0 ]]; then
+        CT_STORAGE="local-lvm"
+        return
+    fi
+
+    CT_STORAGE=$(whiptail --title "SOC Stack: Storage" \
+        --radiolist "Select storage:" 14 58 6 "${items[@]}" \
+        3>&1 1>&2 2>&3) || exit 1
+    CT_STORAGE="${CT_STORAGE//\"/}"
+}
+
+select_network() {
+    CT_BRIDGE=$(whiptail --title "SOC Stack: Network" \
+        --inputbox "Bridge interface:" 10 58 "vmbr0" \
+        3>&1 1>&2 2>&3) || exit 1
+}
+
+# ── LXC Creation ──────────────────────────────────────────────────────────────
+create_container() {
+    local app="$1"
+    local ctid="$2"
+    local hostname="soc-${app,,}"
+
+    local password
+    password="$(openssl rand -base64 16)"
+
+    local template
+    template=$(pveam list local 2>/dev/null | grep "ubuntu-24.04" | awk '{print $1}' | head -1)
+    [[ -z "$template" ]] && template=$(pveam list "${CT_STORAGE}" 2>/dev/null | grep "ubuntu-24.04" | awk '{print $1}' | head -1)
+
+    if [[ -z "$template" ]]; then
+        msg_error "No Ubuntu 24.04 template found. Run: pveam download local ubuntu-24.04-standard_24.04-2_amd64.tar.zst"
+        exit 1
+    fi
+
+    msg_info "Creating LXC ${hostname} (CT ${ctid})"
+    pct create "$ctid" "$template" \
+        --hostname "$hostname" \
+        --memory "${CT_RAM}" \
+        --cores "${CT_CORES}" \
+        --rootfs "${CT_STORAGE}:${CT_DISK}" \
+        --net0 "name=eth0,bridge=${CT_BRIDGE},ip=dhcp" \
+        --password "$password" \
+        --unprivileged 1 \
+        --features nesting=1 \
+        --onboot 1 \
+        --start 0 \
+        &>> "$LOG_FILE"
+
+    msg_ok "Created LXC ${hostname} (CT ${ctid})"
+    echo "$password"
+}
+
+# ── Install Orchestration ─────────────────────────────────────────────────────
+start_and_wait() {
+    local ctid="$1"
+
+    msg_info "Starting container ${ctid}"
+    pct start "$ctid" &>/dev/null || true
+    sleep 5
+
+    msg_info "Waiting for network"
+    local retries=0
+    while ! pct exec "$ctid" -- ping -c1 -W2 8.8.8.8 &>/dev/null; do
+        ((retries++))
+        if [[ $retries -ge 30 ]]; then
+            msg_warn "Network timeout after 60s. Container may need manual network config."
+            return 1
+        fi
+        sleep 2
+    done
+    msg_ok "Network is up"
+}
+
+push_and_run() {
+    local ctid="$1"
+    local script_url="$2"
+    local script_name
+    script_name="$(basename "$script_url")"
+
+    msg_info "Downloading install script"
+    local tmp_script="/tmp/${script_name}"
+    wget -qO "$tmp_script" "$script_url" 2>/dev/null
+    msg_ok "Downloaded ${script_name}"
+
+    msg_info "Pushing script to container"
+    pct push "$ctid" "$tmp_script" "/tmp/${script_name}" &>/dev/null
+    pct exec "$ctid" -- chmod +x "/tmp/${script_name}"
+    msg_ok "Script pushed"
+
+    msg_info "Running install (this may take several minutes)"
+    pct exec "$ctid" -- bash "/tmp/${script_name}" &>> "$LOG_FILE"
+    msg_ok "Install complete"
+
+    rm -f "$tmp_script"
+}
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+show_completion() {
+    local app="$1"
+    local ctid="$2"
+    local password="$3"
+    local ports="$4"
+
+    local ip
+    ip=$(pct exec "$ctid" -- hostname -I 2>/dev/null | awk '{print $1}') || ip="DHCP (check container)"
+
+    echo ""
+    echo -e "${GN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CL}"
+    echo -e "${GN}   SOC Stack: ${app} - Installation Complete${CL}"
+    echo -e "${GN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CL}"
+    echo ""
+    echo -e "  ${CY}Container:${CL}  CT ${ctid}"
+    echo -e "  ${CY}IP:${CL}         ${ip}"
+    echo -e "  ${CY}Ports:${CL}      ${ports}"
+    echo -e "  ${CY}Root Pass:${CL}  ${password}"
+    echo ""
+    echo -e "  ${CY}Log:${CL}        ${LOG_FILE}"
+    echo ""
+    echo -e "${GN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${CL}"
+    echo ""
+}

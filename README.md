@@ -2,9 +2,29 @@
 
 A unified deployment toolkit for security operations tools. One command per tool, fully unattended from VM creation to API key generation.
 
-Deploys security tool stacks on **Hyper-V VMs** using Ubuntu 24.04 cloud images and Docker Compose. PowerShell scripts run on the Windows Hyper-V host (hyperv-host), bash scripts run on the VMs or on the Linux utility server (linux-host).
+Two deployment paths:
+- **Proxmox VE** - One-liner LXC creation scripts (community-scripts.org style)
+- **Hyper-V** - PowerShell VM automation with cloud images
+
+Both paths use Docker Compose stacks with automated setup scripts that handle account creation, API key generation, and service integration.
 
 ## Quick Start
+
+### Option A: Proxmox VE (one-liner)
+
+Run on your Proxmox host:
+
+```bash
+# TheHive + Cortex
+bash -c "$(wget -qLO - https://raw.githubusercontent.com/solomonneas/soc-stack/main/proxmox/ct/thehive-cortex.sh)"
+
+# MISP
+bash -c "$(wget -qLO - https://raw.githubusercontent.com/solomonneas/soc-stack/main/proxmox/ct/misp.sh)"
+```
+
+Interactive whiptail menus let you pick CPU, RAM, disk, storage, and network. Defaults work for most setups. The script creates an LXC, installs Docker, deploys the stack, and runs the automated setup.
+
+### Option B: Hyper-V
 
 ```bash
 # 1. Build cloud-init ISO (on linux-host/Linux)
@@ -43,16 +63,25 @@ setup.sh handles everything: waits for services, changes default passwords, gene
 ```
 soc-stack/
 ├── README.md
-├── scripts/
-│   ├── create-vm.ps1          # Hyper-V VM creation (cloud image -> VHDX -> VM)
-│   ├── destroy-vm.ps1         # Clean teardown (stop VM, delete VHDX)
+├── proxmox/                   # Proxmox VE deployment (community-scripts style)
+│   ├── ct/
+│   │   ├── thehive-cortex.sh  # One-liner: creates LXC + installs stack
+│   │   └── misp.sh
+│   ├── install/
+│   │   ├── thehive-cortex-install.sh  # Runs inside LXC: Docker + stack + setup
+│   │   └── misp-install.sh
+│   └── misc/
+│       └── soc-stack.func     # Shared helpers (whiptail, LXC creation, logging)
+├── scripts/                   # Hyper-V deployment
+│   ├── create-vm.ps1          # Cloud image -> VHDX -> VM
+│   ├── destroy-vm.ps1         # Clean teardown
 │   └── find-vm-ip.ps1        # ARP scan for Hyper-V MAC prefix
 ├── cloud-init/
 │   ├── base-user-data.yaml    # Template: users, packages, docker
 │   ├── base-meta-data.yaml    # Template: instance-id, hostname
 │   ├── base-network-config.yaml # hv_netvsc DHCP config (CRITICAL)
 │   └── build-iso.sh          # genisoimage wrapper (runs on Linux)
-├── stacks/
+├── stacks/                    # Shared: Docker Compose + setup.sh per tool
 │   ├── thehive-cortex/
 │   │   ├── docker-compose.yml
 │   │   ├── setup.sh          # Automated: accounts, API keys, integration
