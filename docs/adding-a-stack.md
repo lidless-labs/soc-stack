@@ -9,7 +9,7 @@ stacks/<stack-name>/
 ├── docker-compose.yml     # Docker Compose service definitions
 ├── setup.sh               # Post-boot automation script
 ├── deploy.md              # Human-readable deployment guide
-└── config.env.template    # Environment variables with sane defaults
+└── config.env.template    # Environment variables with sane defaults, copied to .env
 ```
 
 ## Spec File
@@ -57,7 +57,19 @@ Template:
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-[[ -f "${SCRIPT_DIR}/config.env" ]] && source "${SCRIPT_DIR}/config.env"
+ENV_FILE=""
+if [[ -f "${SCRIPT_DIR}/.env" ]]; then
+    ENV_FILE="${SCRIPT_DIR}/.env"
+elif [[ -f "${SCRIPT_DIR}/config.env" ]]; then
+    ENV_FILE="${SCRIPT_DIR}/config.env"
+fi
+
+if [[ -n "$ENV_FILE" ]]; then
+    set -a
+    # shellcheck source=/dev/null
+    source "$ENV_FILE"
+    set +a
+fi
 
 # Wait for service
 info "Waiting for <service>..."
@@ -87,7 +99,7 @@ The full workflow for any stack:
 3. Create VM (on hyperv-host):   .\create-vm.ps1 -VMName <vm-name> -CloudInitISO <path> [-SpecFile <path>]
 4. Find VM IP:               .\find-vm-ip.ps1 -VMName <vm-name>
 5. SCP stack to VM:          scp -r stacks/<stack-name>/ admin@<ip>:~/<stack-name>/
-6. SSH in and deploy:        ssh admin@<ip> "cd ~/<stack-name> && cp config.env.template config.env && docker compose up -d && ./setup.sh"
+6. SSH in and deploy:        ssh admin@<ip> "cd ~/<stack-name> && cp config.env.template .env && docker compose up -d && ./setup.sh"
 ```
 
 ## Testing

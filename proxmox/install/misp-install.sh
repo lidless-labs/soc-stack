@@ -49,7 +49,8 @@ for f in docker-compose.yml setup.sh config.env.template deploy.md; do
     wget -qO "$f" "${REPO_RAW}/stacks/misp/${f}" 2>/dev/null
 done
 chmod +x setup.sh
-cp config.env.template config.env
+cp config.env.template .env
+ln -sf .env config.env
 msg_ok "Stack files downloaded"
 
 # ── Tune InnoDB for container RAM ─────────────────────────────────────────────
@@ -61,7 +62,7 @@ elif [[ $TOTAL_RAM_MB -le 8192 ]]; then
 else
     INNODB_SIZE="4096M"
 fi
-sed -i "s/INNODB_BUFFER_POOL_SIZE=.*/INNODB_BUFFER_POOL_SIZE=${INNODB_SIZE}/" config.env
+sed -i "s/INNODB_BUFFER_POOL_SIZE=.*/INNODB_BUFFER_POOL_SIZE=${INNODB_SIZE}/" .env
 msg_ok "InnoDB buffer pool set to ${INNODB_SIZE} (${TOTAL_RAM_MB}MB RAM detected)"
 
 # ── Start Services ────────────────────────────────────────────────────────────

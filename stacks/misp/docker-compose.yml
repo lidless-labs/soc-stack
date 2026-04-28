@@ -2,7 +2,7 @@
 # Based on the official misp-docker project with SOC Stack defaults.
 #
 # Usage:
-#   cp config.env.template config.env
+#   cp config.env.template .env
 #   docker compose up -d
 #   ./setup.sh
 

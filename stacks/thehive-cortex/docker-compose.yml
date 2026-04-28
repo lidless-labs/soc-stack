@@ -2,7 +2,7 @@
 # Backend: Cassandra 4.1 (TheHive data) + Elasticsearch 7.17 (shared index)
 #
 # Usage:
-#   cp config.env.template config.env   # edit passwords
+#   cp config.env.template .env         # edit passwords
 #   docker compose up -d
 #   ./setup.sh                          # automates account creation + API keys
 

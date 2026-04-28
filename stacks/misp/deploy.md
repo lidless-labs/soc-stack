@@ -16,8 +16,8 @@ scp -r stacks/misp/ admin@<vm-ip>:~/misp/
 ```bash
 ssh admin@<vm-ip>
 cd ~/misp
-cp config.env.template config.env
-nano config.env  # set passwords, adjust INNODB_BUFFER_POOL_SIZE for your VM
+cp config.env.template .env
+nano .env  # set passwords, adjust INNODB_BUFFER_POOL_SIZE for your VM
 ```
 
 ### 3. Start the stack

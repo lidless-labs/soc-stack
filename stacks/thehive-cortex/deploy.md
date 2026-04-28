@@ -16,8 +16,8 @@ scp -r stacks/thehive-cortex/ admin@<vm-ip>:~/thehive-cortex/
 ```bash
 ssh admin@<vm-ip>
 cd ~/thehive-cortex
-cp config.env.template config.env
-nano config.env  # set passwords and secret key
+cp config.env.template .env
+nano .env  # set passwords and secret key
 ```
 
 ### 3. Start the stack

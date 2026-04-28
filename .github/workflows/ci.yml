@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    name: Validate scripts and specs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck jq
+
+      - name: Check shell syntax
+        run: |
+          find . -type f -name '*.sh' -print0 | sort -z | xargs -0 -n1 bash -n
+
+      - name: Run ShellCheck errors
+        run: |
+          find . -type f -name '*.sh' -print0 | sort -z | xargs -0 shellcheck -S error
+
+      - name: Validate JSON
+        run: |
+          find specs mcp-servers -type f -name '*.json' -print0 | sort -z | xargs -0 -n1 jq empty

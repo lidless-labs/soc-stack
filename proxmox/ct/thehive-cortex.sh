@@ -13,9 +13,29 @@
 # Source: https://github.com/solomonneas/soc-stack
 # ------------------------------------------------------------------------------
 
+set -euo pipefail
+
 REPO_RAW="https://raw.githubusercontent.com/solomonneas/soc-stack/main"
 
-source <(wget -qO - "${REPO_RAW}/proxmox/misc/soc-stack.func")
+SOC_STACK_FUNC="$(mktemp)"
+trap 'rm -f "$SOC_STACK_FUNC"' EXIT
+
+if command -v wget >/dev/null 2>&1; then
+    wget -qO "$SOC_STACK_FUNC" "${REPO_RAW}/proxmox/misc/soc-stack.func"
+elif command -v curl >/dev/null 2>&1; then
+    curl -fsSL "${REPO_RAW}/proxmox/misc/soc-stack.func" -o "$SOC_STACK_FUNC"
+else
+    echo "Error: wget or curl is required to download the SOC Stack helper." >&2
+    exit 1
+fi
+
+if [[ ! -s "$SOC_STACK_FUNC" ]]; then
+    echo "Error: failed to download the SOC Stack helper from ${REPO_RAW}." >&2
+    exit 1
+fi
+
+# shellcheck source=/dev/null
+source "$SOC_STACK_FUNC"
 
 APP="TheHive + Cortex"
 APP_SLUG="thehive-cortex"

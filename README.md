@@ -43,7 +43,7 @@ scp /tmp/thehive-cortex-cidata.iso hyperv-host:C:/Users/user/Downloads/
 
 # 5. Deploy the stack
 scp -r stacks/thehive-cortex/ admin@<ip>:~/thehive-cortex/
-ssh admin@<ip> "cd ~/thehive-cortex && cp config.env.template config.env && docker compose up -d && ./setup.sh"
+ssh admin@<ip> "cd ~/thehive-cortex && cp config.env.template .env && docker compose up -d && ./setup.sh"
 ```
 
 setup.sh handles everything: waits for services, changes default passwords, generates API keys, wires integrations, saves credentials to `api-keys.txt`.
@@ -119,7 +119,7 @@ soc-stack/
 
 3. **setup.sh per stack.** Each stack has a setup script that handles everything post-SSH: docker compose up, wait for health, create accounts, generate keys, wire integrations. This is where all the gotchas live (CSRF tokens, password endpoints, buffer sizes).
 
-4. **config.env.template files.** Sane defaults, copy to `config.env` and customize. Not committed to git.
+4. **config.env.template files.** Sane defaults, copy to `.env` and customize. Not committed to git. `setup.sh` still supports legacy `config.env` files, but Docker Compose auto-loads `.env`.
 
 5. **Shared cloud-init templates.** Base user-data, meta-data, and network-config are shared. Stack-specific packages can be added via the spec file or manually.
 

@@ -31,22 +31,22 @@ touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/soc-stack-install.log"
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
 
 msg_info() {
-    echo -ne " ${INFO} ${1}..."
+    echo -ne " ${INFO} ${1}..." >&2
     log "INFO: $1"
 }
 
 msg_ok() {
-    echo -e "${BFR} ${CM} ${1}"
+    echo -e "${BFR} ${CM} ${1}" >&2
     log "OK: $1"
 }
 
 msg_error() {
-    echo -e "${BFR} ${CROSS} ${1}"
+    echo -e "${BFR} ${CROSS} ${1}" >&2
     log "ERROR: $1"
 }
 
 msg_warn() {
-    echo -e "${BFR} ${WARN} ${1}"
+    echo -e "${BFR} ${WARN} ${1}" >&2
     log "WARN: $1"
 }
 

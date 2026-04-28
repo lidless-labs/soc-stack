@@ -49,7 +49,8 @@ for f in docker-compose.yml setup.sh config.env.template deploy.md; do
     wget -qO "$f" "${REPO_RAW}/stacks/thehive-cortex/${f}" 2>/dev/null
 done
 chmod +x setup.sh
-cp config.env.template config.env
+cp config.env.template .env
+ln -sf .env config.env
 msg_ok "Stack files downloaded"
 
 # ── Start Services ────────────────────────────────────────────────────────────

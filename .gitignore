@@ -10,7 +10,7 @@ __pycache__/
 *.pyc
 .cache/
 
-# Stack secrets (config.env.template is committed, config.env is not)
+# Stack secrets (config.env.template is committed; .env/config.env are not)
 **/config.env
 **/api-keys.txt
 

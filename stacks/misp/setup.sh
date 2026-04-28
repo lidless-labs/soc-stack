@@ -23,7 +23,22 @@ OUTPUT_FILE="./api-keys.txt"
 MAX_WAIT=180  # MISP takes a while to boot
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-[[ -f "${SCRIPT_DIR}/config.env" ]] && source "${SCRIPT_DIR}/config.env"
+
+# Load Compose-compatible .env first. config.env remains supported for older
+# checkouts, but Docker Compose only auto-loads .env for interpolation.
+ENV_FILE=""
+if [[ -f "${SCRIPT_DIR}/.env" ]]; then
+    ENV_FILE="${SCRIPT_DIR}/.env"
+elif [[ -f "${SCRIPT_DIR}/config.env" ]]; then
+    ENV_FILE="${SCRIPT_DIR}/config.env"
+fi
+
+if [[ -n "$ENV_FILE" ]]; then
+    set -a
+    # shellcheck source=/dev/null
+    source "$ENV_FILE"
+    set +a
+fi
 
 while [[ $# -gt 0 ]]; do
     case "$1" in

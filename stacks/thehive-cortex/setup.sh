@@ -10,13 +10,13 @@
 #   5. Save all credentials to api-keys.txt
 #
 # Usage:
-#   ./setup.sh                          # uses config.env defaults
+#   ./setup.sh                          # uses .env defaults
 #   ./setup.sh --thehive-pass "X" --cortex-pass "Y" --org "MyOrg"
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
 
-# ── Defaults (override via config.env or flags) ──────────────────────────────
+# ── Defaults (override via .env/config.env or flags) ─────────────────────────
 THEHIVE_URL="http://localhost:9000"
 CORTEX_URL="http://localhost:9001"
 THEHIVE_ADMIN_PASSWORD="${THEHIVE_ADMIN_PASSWORD:-changeme}"
@@ -28,8 +28,21 @@ MAX_WAIT=120  # seconds
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Load config.env if it exists
-[[ -f "${SCRIPT_DIR}/config.env" ]] && source "${SCRIPT_DIR}/config.env"
+# Load Compose-compatible .env first. config.env remains supported for older
+# checkouts, but Docker Compose only auto-loads .env for interpolation.
+ENV_FILE=""
+if [[ -f "${SCRIPT_DIR}/.env" ]]; then
+    ENV_FILE="${SCRIPT_DIR}/.env"
+elif [[ -f "${SCRIPT_DIR}/config.env" ]]; then
+    ENV_FILE="${SCRIPT_DIR}/config.env"
+fi
+
+if [[ -n "$ENV_FILE" ]]; then
+    set -a
+    # shellcheck source=/dev/null
+    source "$ENV_FILE"
+    set +a
+fi
 
 # ── Parse flags ───────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
