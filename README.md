@@ -1,4 +1,24 @@
-# SOC Stack
+<p align="center">
+  <img src="docs/assets/soc-stack-banner.jpg" alt="SOC Stack deployment launch bay banner">
+</p>
+
+<h1 align="center">SOC Stack</h1>
+
+<p align="center">
+  <strong>Unified deployment toolkit for security operations platforms.</strong>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Proxmox_VE-LXC-E57000?style=for-the-badge&logo=proxmox&logoColor=white" alt="Proxmox VE LXC">
+  <img src="https://img.shields.io/badge/Hyper--V-VMs-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Hyper-V VMs">
+  <img src="https://img.shields.io/badge/Docker_Compose-stacks-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker Compose stacks">
+  <img src="https://img.shields.io/badge/cloud--init-automation-6f42c1?style=for-the-badge" alt="cloud-init automation">
+  <img src="https://img.shields.io/badge/Bash-installers-4EAA25?style=for-the-badge&logo=gnubash&logoColor=white" alt="Bash installers">
+  <img src="https://img.shields.io/badge/PowerShell-Hyper--V-5391FE?style=for-the-badge&logo=powershell&logoColor=white" alt="PowerShell Hyper-V">
+  <img src="https://img.shields.io/badge/TheHive_%2B_Cortex-ready-f59e0b?style=for-the-badge" alt="TheHive and Cortex ready">
+  <img src="https://img.shields.io/badge/MISP-ready-7c3aed?style=for-the-badge" alt="MISP ready">
+  <img src="https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge" alt="MIT License">
+</p>
 
 A unified deployment toolkit for security operations tools. One command per tool, fully unattended from VM creation to API key generation.
 
