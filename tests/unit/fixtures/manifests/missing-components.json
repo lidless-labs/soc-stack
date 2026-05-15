@@ -1,0 +1,4 @@
+{
+  "preset": "standard",
+  "network": { "bridge": "vmbr0" }
+}

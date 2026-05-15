@@ -16,7 +16,7 @@
 set -euo pipefail
 
 MISP_URL="https://localhost"
-MISP_ADMIN_EMAIL="${MISP_ADMIN_EMAIL:-admin@misp.local}"
+MISP_ADMIN_EMAIL="${MISP_ADMIN_EMAIL:-admin@misp.local}"  # content-guard: allow pii/email
 MISP_ADMIN_PASSPHRASE="${MISP_ADMIN_PASSPHRASE:-changeme}"
 DEFAULT_PASSWORD="admin"
 OUTPUT_FILE="./api-keys.txt"

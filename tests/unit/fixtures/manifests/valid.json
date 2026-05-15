@@ -1,0 +1,10 @@
+{
+  "components": ["wazuh"],
+  "preset": "standard",
+  "network": {
+    "bridge": "vmbr0",
+    "storage": "local-lvm",
+    "ip_mode": "dhcp"
+  },
+  "vmid_start": 9000
+}

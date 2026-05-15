@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+CALLS_LOG="${MOCK_SYSTEMCTL_CALLS_LOG:-${BATS_TEST_TMPDIR:-/tmp}/systemctl-calls.log}"
+echo "systemctl $*" >> "$CALLS_LOG"
+case "$1" in
+  is-active)
+    if [[ "${MOCK_SYSTEMCTL_ACTIVE:-yes}" == "yes" ]]; then
+      echo "active"; exit 0
+    else
+      echo "inactive"; exit 3
+    fi
+    ;;
+  is-enabled)
+    if [[ "${MOCK_SYSTEMCTL_ENABLED:-yes}" == "yes" ]]; then
+      echo "enabled"; exit 0
+    else
+      echo "disabled"; exit 1
+    fi
+    ;;
+  *) : ;;
+esac
+exit "${MOCK_SYSTEMCTL_EXIT:-0}"

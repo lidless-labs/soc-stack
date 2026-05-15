@@ -28,6 +28,18 @@ Two deployment paths:
 
 Both paths use Docker Compose stacks with automated setup scripts that handle account creation, API key generation, and service integration.
 
+## Status
+
+A unified one-shot Proxmox installer is in active development. Plan 1 ships the foundation (shared lib, per-component contract, Wazuh deployment, JSON output). The legacy paths (Hyper-V scripts, per-tool LXC one-liners) still work and remain in the repo until the migration completes in subsequent plans.
+
+**Plan 1 (this release):** Wazuh deployment via `scripts/install.sh --components wazuh --preset minimal --json-out /root/soc-stack.json`. State at `/var/lib/soc-stack/`. See [the design spec](docs/superpowers/specs/2026-05-15-soc-stack-unification-design.md).
+
+**Plan 2 (next):** TheHive+Cortex, MISP, Zeek+Suricata, Dashboards, MCP servers.
+
+**Plan 3 (after):** Automated CI on Proxmox, README rewrite, deletion of legacy paths, v1.0.0 release.
+
+---
+
 ## Quick Start
 
 ### Option A: Proxmox VE (one-liner)
