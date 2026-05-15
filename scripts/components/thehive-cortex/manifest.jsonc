@@ -1,0 +1,22 @@
+{
+  "name": "thehive-cortex",
+  "display_name": "TheHive + Cortex",
+  "description": "Case management (TheHive 5) and SOAR with analyzer engine (Cortex 3), backed by Elasticsearch 7 and Cassandra 4",
+  "depends_on": [],
+  "provides": ["thehive_url", "thehive_api_key", "cortex_url", "cortex_api_key"],
+  "presets": {
+    "minimal":    { "ram_mb": 4096, "disk_gb": 30, "cores": 2 },
+    "standard":   { "ram_mb": 6144, "disk_gb": 50, "cores": 2 },
+    "production": { "ram_mb": 12288, "disk_gb": 80, "cores": 4 }
+  },
+  "ports": [9000, 9001],
+  "template_pattern": "ubuntu-22.04-standard",
+  "features": ["nesting=1", "keyctl=1"],
+  "unprivileged": true,
+  "install_method": "docker-compose",
+  "default_creds": {
+    "thehive_user": "admin@thehive.local",
+    "cortex_user": "thehive",
+    "rotate_on_install": true
+  }
+}
