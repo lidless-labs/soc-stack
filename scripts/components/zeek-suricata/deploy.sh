@@ -89,12 +89,13 @@ UEOF
 systemctl daemon-reload
 systemctl enable --now zeek.service
 
-# --- Install Suricata (PPA) ---
+# --- Install Suricata ---
+# On Ubuntu 24.04+, suricata 8.x is available in the default repos and
+# already bundles suricata-update. Avoid the PPA + standalone suricata-update
+# package which conflicts with the bundled copy.
 if ! command -v suricata >/dev/null 2>&1; then
-  log "installing Suricata from oisf/suricata-stable PPA"
-  add-apt-repository -y ppa:oisf/suricata-stable
-  apt-get update -qq
-  apt-get install -y -qq suricata suricata-update
+  log "installing Suricata from Ubuntu repos"
+  apt-get install -y -qq suricata
 fi
 if [[ -f /etc/suricata/suricata.yaml ]]; then
   sed -i "s/- interface: eth0/- interface: ${IFACE}/" /etc/suricata/suricata.yaml
