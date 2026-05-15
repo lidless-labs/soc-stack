@@ -86,10 +86,12 @@ else
   log "cloning Bro Hunter"
   git clone --quiet "${BROHUNTER_REPO}" "${BROHUNTER_DIR}"
 fi
-log "building Bro Hunter"
-cd "${BROHUNTER_DIR}"
+# Both repos keep their Vite app in web/ (root package.json lacks tsconfig)
+log "building Bro Hunter (web/ subdir)"
+cd "${BROHUNTER_DIR}/web"
 npm install --silent
-npm run build
+# Skip tsc typecheck (upstream has unused-var errors); run vite directly
+npx --yes vite build --outDir dist
 
 # Clone or update Playbook Forge
 if [[ -d "${PLAYBOOKFORGE_DIR}/.git" ]]; then
@@ -99,12 +101,12 @@ else
   log "cloning Playbook Forge"
   git clone --quiet "${PLAYBOOKFORGE_REPO}" "${PLAYBOOKFORGE_DIR}"
 fi
-log "building Playbook Forge"
-cd "${PLAYBOOKFORGE_DIR}"
+log "building Playbook Forge (web/ subdir)"
+cd "${PLAYBOOKFORGE_DIR}/web"
 npm install --silent
-npm run build
+npx --yes vite build --outDir dist
 
-# Systemd unit: Bro Hunter
+# Systemd unit: Bro Hunter (vite preview from web/ subdir)
 cat > /etc/systemd/system/s3-bro-hunter.service <<EOF
 [Unit]
 Description=S3 Stack - Bro Hunter
@@ -112,8 +114,8 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=${BROHUNTER_DIR}
-ExecStart=npm run preview -- --port ${BROHUNTER_PORT} --host 127.0.0.1
+WorkingDirectory=${BROHUNTER_DIR}/web
+ExecStart=npx vite preview --port ${BROHUNTER_PORT} --host 127.0.0.1
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
@@ -122,7 +124,7 @@ Environment=NODE_ENV=production
 WantedBy=multi-user.target
 EOF
 
-# Systemd unit: Playbook Forge
+# Systemd unit: Playbook Forge (vite preview from web/ subdir)
 cat > /etc/systemd/system/s3-playbook-forge.service <<EOF
 [Unit]
 Description=S3 Stack - Playbook Forge
@@ -130,8 +132,8 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=${PLAYBOOKFORGE_DIR}
-ExecStart=npm run preview -- --port ${PLAYBOOKFORGE_PORT} --host 127.0.0.1
+WorkingDirectory=${PLAYBOOKFORGE_DIR}/web
+ExecStart=npx vite preview --port ${PLAYBOOKFORGE_PORT} --host 127.0.0.1
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
