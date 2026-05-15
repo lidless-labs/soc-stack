@@ -112,8 +112,9 @@ services:
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
       - thread_pool.search.queue_size=100000
       - thread_pool.write.queue_size=10000
+      - bootstrap.memory_lock=false
+      - bootstrap.system_call_filter=false
     ulimits:
-      memlock: { soft: -1, hard: -1 }
       nofile: { soft: 65536, hard: 65536 }
     volumes:
       - es-data:/usr/share/elasticsearch/data
