@@ -157,25 +157,27 @@ volumes:
   es-data:
 COMPOSE_EOF
 
-log "starting compose stack (may take 3-5 minutes for Cassandra + ES warmup)"
+log "starting compose stack (may take 5-10 minutes for Cassandra + ES warmup)"
 docker compose -f "${STACK_DIR}/docker-compose.yml" up -d
 
 wait_http() {
   local url="$1"
   local timeout="${2:-180}"
+  local label="${3:-service}"
   local elapsed=0
   while (( elapsed < timeout )); do
     if curl -sf -o /dev/null --max-time 5 "${url}"; then return 0; fi
-    sleep 5
-    elapsed=$((elapsed + 5))
+    sleep 10
+    elapsed=$((elapsed + 10))
+    (( elapsed % 60 == 0 )) && log "  ... ${label} ${elapsed}s, still waiting"
   done
   return 1
 }
 
-log "waiting for TheHive on :9000"
-wait_http "http://localhost:9000/api/status" 300 || write_failed "TheHive did not become ready within 300s"
-log "waiting for Cortex on :9001"
-wait_http "http://localhost:9001/api/status" 300 || write_failed "Cortex did not become ready within 300s"
+log "waiting for TheHive on :9000 (up to 600s)"
+wait_http "http://localhost:9000/api/status" 600 "TheHive" || write_failed "TheHive did not become ready within 600s"
+log "waiting for Cortex on :9001 (up to 600s)"
+wait_http "http://localhost:9001/api/status" 600 "Cortex" || write_failed "Cortex did not become ready within 600s"
 
 # --- Cortex first-run wizard ---
 log "running Cortex first-run wizard"
