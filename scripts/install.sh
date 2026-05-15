@@ -366,6 +366,7 @@ main() {
   # Pre-flight
   check_root          || return 1
   check_proxmox_version || return 1
+  bootstrap_deps      || return 1
   check_deps          || return 1
   check_bridge "${OPT_BRIDGE}" || return 1
   if [[ -n "${OPT_STORAGE}" ]]; then

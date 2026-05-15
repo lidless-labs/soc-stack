@@ -52,3 +52,30 @@ check_storage() {
     return 1
   fi
 }
+
+# bootstrap_deps
+# Installs missing required deps (jq curl wget openssl) via apt-get.
+# Idempotent: no-op if all are present.
+# Returns 0 on success, non-zero if any install fails.
+bootstrap_deps() {
+  local deps=(jq curl wget openssl)
+  local missing=()
+  local dep
+  for dep in "${deps[@]}"; do
+    command -v "${dep}" >/dev/null 2>&1 || missing+=("${dep}")
+  done
+  if [[ ${#missing[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  msg_info "installing missing deps: ${missing[*]}"
+  if ! apt-get update -qq >/dev/null 2>&1; then
+    msg_error "apt-get update failed"
+    return 1
+  fi
+  if ! apt-get install -y -qq "${missing[@]}" >/dev/null 2>&1; then
+    msg_error "apt-get install failed for: ${missing[*]}"
+    return 1
+  fi
+  msg_ok "installed: ${missing[*]}"
+}
