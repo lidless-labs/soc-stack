@@ -99,7 +99,7 @@ services:
     volumes:
       - misp-data:/var/www/MISP
     depends_on:
-      misp-db:
+      db:
         condition: service_healthy
       redis:
         condition: service_started
@@ -110,9 +110,9 @@ services:
       retries: 10
       start_period: 120s
 
-  misp-db:
+  db:
     image: mariadb:10.11
-    hostname: misp-db
+    hostname: db
     restart: unless-stopped
     environment:
       MYSQL_DATABASE: misp
