@@ -163,9 +163,20 @@ wait_http() {
   return 1
 }
 
-log "waiting for MISP on https://localhost (up to 300s)"
-wait_http "https://localhost/users/heartbeat" 300 \
-  || write_failed "MISP did not become ready within 300s"
+log "waiting for MISP heartbeat (up to 900s, MISP first-run is slow)"
+elapsed=0
+while (( elapsed < 900 )); do
+  if curl -sfk --max-time 5 -o /dev/null "https://localhost/users/heartbeat"; then
+    log "MISP heartbeat OK after ${elapsed}s"
+    break
+  fi
+  sleep 10
+  elapsed=$((elapsed + 10))
+  (( elapsed % 60 == 0 )) && log "  ... ${elapsed}s, still waiting"
+done
+if (( elapsed >= 900 )); then
+  write_failed "MISP did not become healthy within 900s"
+fi
 
 # --- Generate API key via cake CLI ---
 # MISP advanced authkeys are enabled by default; the REST endpoint approach is
