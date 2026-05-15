@@ -69,6 +69,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq curl wget gnupg jq
 
+log "Using -i (ignore hardware check) for wazuh-install.sh - suitable for lab/dev; production should use --preset standard or higher"
 log "Downloading Wazuh installer"
 cd /root
 curl -fsSLO https://packages.wazuh.com/4.9/wazuh-install.sh
@@ -88,11 +89,11 @@ nodes:
 EOF
 
 log "Running wazuh-install.sh (this may take 10-20 minutes)"
-bash wazuh-install.sh --generate-config-files
-bash wazuh-install.sh --wazuh-indexer node-1
-bash wazuh-install.sh --start-cluster
-bash wazuh-install.sh --wazuh-server wazuh-1
-bash wazuh-install.sh --wazuh-dashboard dashboard
+bash wazuh-install.sh -i --generate-config-files
+bash wazuh-install.sh -i --wazuh-indexer node-1
+bash wazuh-install.sh -i --start-cluster
+bash wazuh-install.sh -i --wazuh-server wazuh-1
+bash wazuh-install.sh -i --wazuh-dashboard dashboard
 
 # Extract the generated admin password from wazuh-passwords.txt
 ADMIN_PASS=""
