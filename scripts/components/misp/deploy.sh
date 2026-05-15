@@ -186,7 +186,7 @@ fi
 log "generating API key via cake CLI"
 MISP_API_KEY=""
 MISP_API_KEY="$(docker compose -f "${STACK_DIR}/docker-compose.yml" exec -T misp-core bash -c \
-  "cd /var/www/MISP/app && php cake user change_authkey ${MISP_ADMIN_EMAIL}" 2>/dev/null \
+  "/var/www/MISP/app/Console/cake user change_authkey ${MISP_ADMIN_EMAIL}" 2>/dev/null \
   | grep -oP '[a-zA-Z0-9]{40}' | head -1 || true)"
 
 if [[ -z "${MISP_API_KEY}" ]]; then
