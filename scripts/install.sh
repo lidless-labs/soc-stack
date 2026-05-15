@@ -145,16 +145,89 @@ expand_components() {
 }
 
 # build_manifest
-# Reads OPT_* globals, returns a manifest JSON document on stdout.
-# Returns non-zero with an error message if any component is unknown.
+# Returns a manifest JSON document on stdout.
+#
+# If OPT_MANIFEST is set, reads that file as the base and merges any non-default
+# CLI overrides on top (only flags the user explicitly set override the manifest;
+# default values do not).
+#
+# If OPT_MANIFEST is unset, constructs the manifest from OPT_* globals as before.
+#
+# Returns non-zero (with stderr message) on malformed manifest or unknown component.
 build_manifest() {
-  local components_list
-  components_list="$(expand_components "${OPT_COMPONENTS}")"
+  local manifest
 
-  # Validate each name
+  if [[ -n "${OPT_MANIFEST}" ]]; then
+    if [[ ! -f "${OPT_MANIFEST}" ]]; then
+      printf 'manifest file not found: %s\n' "${OPT_MANIFEST}" >&2
+      return 1
+    fi
+    if ! manifest="$(jq -c . "${OPT_MANIFEST}" 2>/dev/null)"; then
+      printf 'manifest is not valid JSON: %s\n' "${OPT_MANIFEST}" >&2
+      return 1
+    fi
+
+    # Apply user-set CLI overrides. We detect "user set" by comparing OPT_* to
+    # the documented defaults. Only non-default OPT_* values override.
+    if [[ "${OPT_COMPONENTS}" != "all" ]]; then
+      manifest="$(jq --arg v "${OPT_COMPONENTS}" '.components = ($v | split(","))' <<< "${manifest}")"
+    fi
+    if [[ "${OPT_PRESET}" != "standard" ]]; then
+      manifest="$(jq --arg v "${OPT_PRESET}" '.preset = $v' <<< "${manifest}")"
+    fi
+    if [[ "${OPT_BRIDGE}" != "vmbr0" ]]; then
+      manifest="$(jq --arg v "${OPT_BRIDGE}" '.network.bridge = $v' <<< "${manifest}")"
+    fi
+    if [[ -n "${OPT_STORAGE}" ]]; then
+      manifest="$(jq --arg v "${OPT_STORAGE}" '.network.storage = $v' <<< "${manifest}")"
+    fi
+    if [[ "${OPT_IP_MODE}" != "dhcp" ]]; then
+      manifest="$(jq --arg v "${OPT_IP_MODE}" '.network.ip_mode = $v' <<< "${manifest}")"
+    fi
+    if [[ -n "${OPT_IP_RANGE}" ]]; then
+      manifest="$(jq --arg v "${OPT_IP_RANGE}" '.network.ip_range = $v' <<< "${manifest}")"
+    fi
+    if [[ -n "${OPT_VLAN}" ]]; then
+      manifest="$(jq --arg v "${OPT_VLAN}" '.network.vlan = $v' <<< "${manifest}")"
+    fi
+    if [[ "${OPT_VMID_START}" != "0" ]]; then
+      manifest="$(jq --argjson v "${OPT_VMID_START}" '.vmid_start = $v' <<< "${manifest}")"
+    fi
+  else
+    # Flag-only mode (Plan 1 behavior)
+    local components_list
+    components_list="$(expand_components "${OPT_COMPONENTS}")"
+    local components_json
+    # shellcheck disable=SC2086
+    components_json="$(printf '%s\n' ${components_list} | jq -R . | jq -s .)"
+
+    manifest="$(jq -n \
+      --argjson components "${components_json}" \
+      --arg preset "${OPT_PRESET}" \
+      --arg bridge "${OPT_BRIDGE}" \
+      --arg storage "${OPT_STORAGE}" \
+      --arg ip_mode "${OPT_IP_MODE}" \
+      --arg ip_range "${OPT_IP_RANGE}" \
+      --arg vlan "${OPT_VLAN}" \
+      --argjson vmid_start "${OPT_VMID_START}" \
+      '{
+        components: $components,
+        preset: $preset,
+        network: {
+          bridge: $bridge,
+          storage: (if $storage == "" then null else $storage end),
+          ip_mode: $ip_mode,
+          ip_range: (if $ip_range == "" then null else $ip_range end),
+          vlan: (if $vlan == "" then null else $vlan end)
+        },
+        vmid_start: $vmid_start
+      }')"
+  fi
+
+  # Validate every component is known
   local c
-  # shellcheck disable=SC2086  # intentional word-splitting on space-separated list
-  for c in ${components_list}; do
+  while IFS= read -r c; do
+    [[ -n "${c}" ]] || continue
     local known=0
     local k
     for k in "${COMPONENTS_KNOWN[@]}"; do
@@ -164,34 +237,9 @@ build_manifest() {
       printf 'unknown component: %s\n' "${c}" >&2
       return 1
     fi
-  done
+  done < <(jq -r '.components[]' <<< "${manifest}")
 
-  # Build components array as JSON
-  local components_json
-  # shellcheck disable=SC2086  # intentional word-splitting on space-separated list
-  components_json="$(printf '%s\n' ${components_list} | jq -R . | jq -s .)"
-
-  jq -n \
-    --argjson components "${components_json}" \
-    --arg preset "${OPT_PRESET}" \
-    --arg bridge "${OPT_BRIDGE}" \
-    --arg storage "${OPT_STORAGE}" \
-    --arg ip_mode "${OPT_IP_MODE}" \
-    --arg ip_range "${OPT_IP_RANGE}" \
-    --arg vlan "${OPT_VLAN}" \
-    --argjson vmid_start "${OPT_VMID_START}" \
-    '{
-      components: $components,
-      preset: $preset,
-      network: {
-        bridge: $bridge,
-        storage: (if $storage == "" then null else $storage end),
-        ip_mode: $ip_mode,
-        ip_range: (if $ip_range == "" then null else $ip_range end),
-        vlan: (if $vlan == "" then null else $vlan end)
-      },
-      vmid_start: $vmid_start
-    }'
+  printf '%s\n' "${manifest}"
 }
 
 # deploy_one <component> <manifest_json>
