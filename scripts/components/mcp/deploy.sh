@@ -45,6 +45,12 @@ if [[ "${all_active}" -eq 0 ]]; then
   apt-get update -qq
   apt-get install -y -qq curl git ca-certificates jq
 
+  # Wait for DNS + connectivity (LXC may not be fully online yet)
+  for _ in $(seq 1 30); do
+    if curl -sf --max-time 3 https://github.com/ >/dev/null 2>&1; then break; fi
+    sleep 2
+  done
+
   if ! command -v node >/dev/null 2>&1 || (( "$(node -v | sed 's/[v.]/ /g' | awk '{print $1}')" < 20 )); then
     log "installing Node.js 20"
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
@@ -75,7 +81,17 @@ for name in wazuh thehive cortex misp zeek suricata mitre rapid7 sophos; do
       git -C "${dest}" reset --quiet --hard origin/HEAD || true
     fi
   else
-    git clone --quiet "${repo}" "${dest}"
+    # Retry git clone up to 3 times
+    clone_ok=0
+    for attempt in 1 2 3; do
+      if git clone --quiet "${repo}" "${dest}"; then
+        clone_ok=1; break
+      fi
+      log "clone attempt ${attempt}/3 failed for ${repo}, retrying in 5s"
+      sleep 5
+      rm -rf "${dest}"
+    done
+    [[ "${clone_ok}" -eq 1 ]] || write_failed "git clone failed for ${repo} after 3 attempts"
   fi
   ( cd "${dest}" && npm install --silent && (npm run build --silent 2>/dev/null || true) )
 
