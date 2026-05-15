@@ -424,6 +424,9 @@ main() {
   emit_final_json "${OPT_JSON_OUT}"
   msg_ok "result JSON written to ${OPT_JSON_OUT}"
 
+  emit_mcp_config "${OPT_MCP_CONFIG_OUT}"
+  msg_ok "MCP client config written to ${OPT_MCP_CONFIG_OUT}"
+
   return "${exit_status}"
 }
 
