@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Fake pct that records calls and returns scriptable output.
+# Behavior controlled via env vars:
+#   MOCK_PCT_STATUS    - what `pct status <vmid>` returns ("running" or "stopped"; default "stopped")
+#   MOCK_PCT_LIST      - what `pct list` prints
+#   MOCK_PCT_EXEC      - what `pct exec <vmid> -- <cmd>` prints
+#   MOCK_PCT_EXIT      - exit code for `pct create`, `pct start`, etc. (default 0)
+#   MOCK_PCT_CALLS_LOG - file to append call log (default $BATS_TEST_TMPDIR/pct-calls.log)
+
+CALLS_LOG="${MOCK_PCT_CALLS_LOG:-${BATS_TEST_TMPDIR:-/tmp}/pct-calls.log}"
+echo "pct $*" >> "$CALLS_LOG"
+
+case "$1" in
+  status)
+    if [[ "${MOCK_PCT_STATUS:-stopped}" == "running" ]]; then
+      echo "status: running"
+    else
+      echo "status: stopped"
+    fi
+    ;;
+  list)
+    printf '%s\n' "${MOCK_PCT_LIST:-VMID       Status     Lock         Name}"
+    ;;
+  exec)
+    printf '%s\n' "${MOCK_PCT_EXEC:-}"
+    ;;
+  create|start|stop|destroy|push|set)
+    : # accept silently
+    ;;
+  *)
+    : # accept silently
+    ;;
+esac
+
+exit "${MOCK_PCT_EXIT:-0}"
