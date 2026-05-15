@@ -1,0 +1,22 @@
+// scripts/components/misp/manifest.jsonc
+{
+  "name": "misp",
+  "display_name": "MISP",
+  "description": "Threat Intelligence Sharing Platform (MariaDB + Redis backed)",
+  "depends_on": [],
+  "provides": ["misp_url", "misp_api_key"],
+  "presets": {
+    "minimal":    { "ram_mb": 2048, "disk_gb": 20, "cores": 1 },
+    "standard":   { "ram_mb": 4096, "disk_gb": 40, "cores": 2 },
+    "production": { "ram_mb": 8192, "disk_gb": 80, "cores": 4 }
+  },
+  "ports": [443],
+  "template_pattern": "ubuntu-22.04-standard",
+  "features": ["nesting=1"],
+  "unprivileged": true,
+  "install_method": "docker-compose",
+  "default_creds": {
+    "user": "admin@admin.test",
+    "rotate_on_install": true
+  }
+}
