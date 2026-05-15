@@ -33,7 +33,7 @@ write_failed() {
 trap 'write_failed "aborted on line $LINENO"' ERR
 
 # Repo + path constants
-BROHUNTER_REPO="https://github.com/solomonneas/bro_hunter.git"
+BROHUNTER_REPO="https://github.com/solomonneas/bro-hunter.git"
 PLAYBOOKFORGE_REPO="https://github.com/solomonneas/playbook-forge.git"
 INSTALL_DIR="/opt/s3-dashboards"
 BROHUNTER_DIR="${INSTALL_DIR}/bro-hunter"
