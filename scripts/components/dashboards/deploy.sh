@@ -66,7 +66,7 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 log "updating apt"
 apt-get update -qq
-apt-get install -y -qq nginx git python3-venv curl
+apt-get install -y -qq nginx git python3-venv curl jq
 
 # Install Node 20 from NodeSource if not already present or too old
 if ! command -v node >/dev/null 2>&1 || [[ "$(node -v | cut -d. -f1 | tr -d v)" -lt 20 ]]; then
