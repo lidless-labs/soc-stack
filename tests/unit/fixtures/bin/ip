@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Fake ip command that returns scriptable output.
+# Behavior controlled via env vars:
+#   MOCK_IP_LINK_SHOW - what `ip link show <bridge>` prints
+#   MOCK_IP_ADDR      - what `ip a` prints
+
+CALLS_LOG="${MOCK_IP_CALLS_LOG:-${BATS_TEST_TMPDIR:-/tmp}/ip-calls.log}"
+echo "ip $*" >> "$CALLS_LOG"
+
+case "$1" in
+  link)
+    if [[ "$2" == "show" ]]; then
+      printf '%s\n' "${MOCK_IP_LINK_SHOW:-}"
+      exit "${MOCK_IP_LINK_EXIT:-1}"
+    fi
+    ;;
+  a)
+    printf '%s\n' "${MOCK_IP_ADDR:-}"
+    exit "${MOCK_IP_ADDR_EXIT:-0}"
+    ;;
+  *)
+    : # accept silently
+    ;;
+esac
+
+exit 0

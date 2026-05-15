@@ -1,0 +1,21 @@
+{
+  "name": "wazuh",
+  "display_name": "Wazuh",
+  "description": "SIEM/XDR platform with vulnerability management",
+  "depends_on": [],
+  "provides": ["wazuh_url", "wazuh_api", "wazuh_agent_endpoint"],
+  "presets": {
+    "minimal":    { "ram_mb": 2048, "disk_gb": 30,  "cores": 1 },
+    "standard":   { "ram_mb": 4096, "disk_gb": 50,  "cores": 2 },
+    "production": { "ram_mb": 8192, "disk_gb": 100, "cores": 4 }
+  },
+  "ports": [443, 1514, 1515, 55000],
+  "template_pattern": "ubuntu-22.04-standard",
+  "features": ["nesting=1"],
+  "unprivileged": true,
+  "install_method": "native",
+  "default_creds": {
+    "user": "admin",
+    "password_rotate_on_install": true
+  }
+}
