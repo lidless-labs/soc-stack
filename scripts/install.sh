@@ -45,6 +45,8 @@ OPT_FORCE="0"
 # shellcheck disable=SC2034
 OPT_NO_INTEGRATE="0"
 OPT_NON_INTERACTIVE=""
+# shellcheck disable=SC2034
+OPT_EARLY_EXIT=0
 
 usage() {
   cat <<EOF
@@ -96,8 +98,8 @@ parse_args() {
       --force)             OPT_FORCE="1"; shift ;;
       --no-integrate)      OPT_NO_INTEGRATE="1"; shift ;;
       --non-interactive)   OPT_NON_INTERACTIVE="1"; shift ;;
-      --version)           printf 'soc-stack v%s\n' "${SOC_STACK_VERSION}"; return 0 ;;
-      --help|-h)           usage; return 0 ;;
+      --version)           printf 'soc-stack v%s\n' "${SOC_STACK_VERSION}"; OPT_EARLY_EXIT=1; return 0 ;;
+      --help|-h)           usage; OPT_EARLY_EXIT=1; return 0 ;;
       *) printf 'unknown flag: %s\n' "$1" >&2; usage >&2; return 1 ;;
     esac
   done
@@ -192,13 +194,223 @@ build_manifest() {
     }'
 }
 
-# main() stub - the full preflight + dispatch body lands in Task 25.
-# This stub is intentionally minimal so tests for parse_args / build_manifest
-# can source install.sh under SOC_TEST_MODE without triggering deployment logic.
+# deploy_one <component> <manifest_json>
+# Returns 0 if deployed (or already-deployed), non-zero on failure.
+deploy_one() {
+  local component="$1"
+  local manifest="$2"
+
+  msg_info "==== ${component} ===="
+
+  if is_completed "${component}" && [[ "${OPT_FORCE}" != "1" ]]; then
+    msg_ok "${component} already deployed (state status=deployed); skipping"
+    return 0
+  fi
+
+  local preset bridge storage ip_mode
+  preset="$(jq -r '.preset' <<< "${manifest}")"
+  bridge="$(jq -r '.network.bridge' <<< "${manifest}")"
+  storage="$(jq -r '.network.storage // "local-lvm"' <<< "${manifest}")"
+  ip_mode="$(jq -r '.network.ip_mode' <<< "${manifest}")"
+
+  # Get a VMID
+  local vmid_start vmid
+  vmid_start="$(jq -r '.vmid_start' <<< "${manifest}")"
+  if [[ "${vmid_start}" == "0" ]] || [[ -z "${vmid_start}" ]]; then
+    vmid="$(next_vmid 200)"
+  else
+    vmid="$(next_vmid "${vmid_start}")"
+  fi
+
+  # Build network config
+  local net_config="name=eth0,bridge=${bridge}"
+  case "${ip_mode}" in
+    dhcp)   net_config+=",ip=dhcp" ;;
+    static)
+      local ip_range index ip
+      ip_range="$(jq -r '.network.ip_range' <<< "${manifest}")"
+      index=0  # Plan 1 single-component, index 0
+      ip="$(allocate_ip "${ip_range}" "${index}")"
+      net_config+=",ip=${ip}"
+      ;;
+  esac
+
+  # Get template
+  local template
+  template="$(pveam list "${storage}" 2>/dev/null | awk '/ubuntu-22.04/{print $1; exit}')"
+  if [[ -z "${template}" ]]; then
+    template="$(pveam list local 2>/dev/null | awk '/ubuntu-22.04/{print $1; exit}')"
+  fi
+  if [[ -z "${template}" ]]; then
+    msg_info "downloading Ubuntu 22.04 template"
+    pveam update >/dev/null 2>&1 || true
+    pveam download local ubuntu-22.04-standard_22.04-1_amd64.tar.zst >/dev/null 2>&1 || true
+    template="local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
+  fi
+
+  # Get LXC spec from component
+  local spec_lines
+  spec_lines="$( SOC_PRESET="${preset}" \
+                 SOC_NETWORK_CONFIG="${net_config}" \
+                 SOC_STORAGE="${storage}" \
+                 "${COMPONENTS_DIR}/${component}/lxc-spec.sh" )"
+
+  # Generate root password
+  local rootpw
+  rootpw="$(gen_password 24)"
+  store_secret "${component}-lxc-root" "${rootpw}"
+
+  # Create LXC
+  msg_info "creating LXC ${vmid} for ${component}"
+  local pct_args=()
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] || continue
+    local part_arr=()
+    read -r -a part_arr <<< "${line}"
+    pct_args+=("${part_arr[@]}")
+  done <<< "${spec_lines}"
+
+  if [[ "${OPT_DRY_RUN}" == "1" ]]; then
+    msg_info "[dry-run] would: pct create ${vmid} ${template} --hostname s3-${component} ${pct_args[*]} --password ***"
+    return 0
+  fi
+
+  lxc_create "${vmid}" "s3-${component}" "${template}" "${pct_args[@]}" --password "${rootpw}"
+  lxc_start "${vmid}"
+  msg_info "waiting for LXC ${vmid} network"
+  lxc_wait_network "${vmid}"
+
+  # Persist LXC info to state up front
+  state_set "${component}" "lxc.vmid" "${vmid}"
+  state_set "${component}" "lxc.hostname" "s3-${component}"
+  state_set "${component}" "preset" "${preset}"
+
+  # Bind-mount state dir into LXC
+  pct set "${vmid}" -mp0 "${SOC_STATE_DIR},mp=${SOC_STATE_DIR}"
+  pct exec "${vmid}" -- mkdir -p "${SOC_STATE_DIR}/state" "${SOC_SECRETS_DIR}"
+
+  # Push and run deploy.sh
+  msg_info "running ${component}/deploy.sh inside LXC ${vmid}"
+  local remote_deploy="/tmp/${component}-deploy.sh"
+  lxc_push_script "${vmid}" "${COMPONENTS_DIR}/${component}/deploy.sh" "${remote_deploy}"
+
+  if ! pct exec "${vmid}" -- env \
+      SOC_STATE_DIR="${SOC_STATE_DIR}" \
+      SOC_COMPONENT="${component}" \
+      SOC_PRESET="${preset}" \
+      SOC_NON_INTERACTIVE=1 \
+      bash "${remote_deploy}"; then
+    msg_error "${component} deploy.sh failed"
+    state_set "${component}" status "failed"
+    return 1
+  fi
+
+  # Run verify.sh
+  msg_info "verifying ${component}"
+  local remote_verify="/tmp/${component}-verify.sh"
+  lxc_push_script "${vmid}" "${COMPONENTS_DIR}/${component}/verify.sh" "${remote_verify}"
+  local retries=3
+  local i=0
+  while (( i < retries )); do
+    if pct exec "${vmid}" -- bash "${remote_verify}"; then
+      break
+    fi
+    i=$((i + 1))
+    msg_warn "verify attempt ${i}/${retries} failed for ${component}, retrying in 30s"
+    sleep 30
+  done
+  if (( i >= retries )); then
+    msg_error "${component} verify.sh failed after ${retries} attempts"
+    state_set "${component}" status "failed"
+    return 1
+  fi
+
+  # Refresh state with the post-deploy IP
+  local ip
+  ip="$(lxc_ip "${vmid}")"
+  if [[ -n "${ip}" ]]; then
+    state_set "${component}" "lxc.ip" "${ip}"
+  fi
+
+  msg_ok "${component} deployed successfully"
+  return 0
+}
+
+# integrate_all - run each deployed component's integrate.sh
+integrate_all() {
+  if [[ "${OPT_NO_INTEGRATE}" == "1" ]]; then
+    msg_info "skipping integration phase (--no-integrate)"
+    return 0
+  fi
+  local f
+  for f in "${COMPONENTS_DIR}"/*/integrate.sh; do
+    [[ -x "${f}" ]] || continue
+    local comp_name
+    comp_name="$(basename "$(dirname "${f}")")"
+    if ! is_completed "${comp_name}"; then
+      msg_info "skipping integrate.sh for ${comp_name} (not deployed)"
+      continue
+    fi
+    msg_info "running ${comp_name}/integrate.sh"
+    SOC_STATE_DIR="${SOC_STATE_DIR}" "${f}" || msg_warn "${comp_name} integrate.sh returned non-zero"
+  done
+}
+
 main() {
   parse_args "$@" || return $?
+  [[ "${OPT_EARLY_EXIT}" == "1" ]] && return 0
   source_libs
-  msg_info "soc-stack v${SOC_STACK_VERSION} starting (Plan 1)"
+
+  msg_info "soc-stack v${SOC_STACK_VERSION} starting"
+
+  # Pre-flight
+  check_root          || return 1
+  check_proxmox_version || return 1
+  check_deps          || return 1
+  check_bridge "${OPT_BRIDGE}" || return 1
+  if [[ -n "${OPT_STORAGE}" ]]; then
+    check_storage "${OPT_STORAGE}" || return 1
+  fi
+
+  # Build manifest
+  local manifest
+  manifest="$(build_manifest)" || return 1
+
+  if [[ "${OPT_DRY_RUN}" == "1" ]]; then
+    msg_info "[dry-run] effective manifest:"
+    jq <<< "${manifest}"
+  fi
+
+  # Deploy each component in canonical order (Plan 1 effectively wazuh only)
+  local exit_status=0
+  local components_arr=()
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] && components_arr+=("${line}")
+  done < <(jq -r '.components[]' <<< "${manifest}")
+
+  local component
+  for component in "${components_arr[@]}"; do
+    if ! deploy_one "${component}" "${manifest}"; then
+      exit_status=3
+    fi
+  done
+
+  # Only mark completed if verify passed (set inside deploy_one upon success
+  # via state file; this confirms via is_completed check)
+  for component in "${components_arr[@]}"; do
+    if [[ "$(state_get "${component}" status)" == "deployed" ]]; then
+      mark_completed "${component}" || true
+    fi
+  done
+
+  # Integration phase
+  integrate_all
+
+  # Emit results
+  emit_final_json "${OPT_JSON_OUT}"
+  msg_ok "result JSON written to ${OPT_JSON_OUT}"
+
+  return "${exit_status}"
 }
 
 # Only run main when executed (not when sourced for tests)
