@@ -81,3 +81,27 @@ emit_final_json() {
       errors: []
     }' > "${out}"
 }
+
+# emit_mcp_config <output_path>
+# Reads the mcp component's state file (if any) and writes a paste-ready
+# MCP client config to <output_path>.
+emit_mcp_config() {
+  local out="$1"
+  local mcp_state="${SOC_STATE_DIR}/state/mcp.json"
+
+  local endpoints='[]'
+  if [[ -f "${mcp_state}" ]]; then
+    endpoints="$(jq '.mcp_endpoints // []' "${mcp_state}")"
+  fi
+
+  jq -n --argjson eps "${endpoints}" '
+    {
+      comment: "Paste the mcpServers block into your MCP client config (Claude Desktop, OpenClaw, etc).",
+      mcpServers: ($eps | map({(.name): {
+        type: "sse",
+        url: .url,
+        headers: { Authorization: ("Bearer " + .token) }
+      }}) | add // {}),
+      raw_endpoints: $eps
+    }' > "${out}"
+}
