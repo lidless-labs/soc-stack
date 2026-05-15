@@ -280,13 +280,7 @@ deploy_one() {
   msg_info "waiting for LXC ${vmid} network"
   lxc_wait_network "${vmid}"
 
-  # Persist LXC info to state up front
-  state_set "${component}" "lxc.vmid" "${vmid}"
-  state_set "${component}" "lxc.hostname" "s3-${component}"
-  state_set "${component}" "preset" "${preset}"
-
-  # Bind-mount state dir into LXC
-  pct set "${vmid}" -mp0 "${SOC_STATE_DIR},mp=${SOC_STATE_DIR}"
+  # Create state dirs INSIDE the LXC (no bind-mount; orchestrator pulls back after)
   pct exec "${vmid}" -- mkdir -p "${SOC_STATE_DIR}/state" "${SOC_SECRETS_DIR}"
 
   # Push and run deploy.sh
@@ -304,6 +298,25 @@ deploy_one() {
     state_set "${component}" status "failed"
     return 1
   fi
+
+  # Pull deploy outputs from the LXC into the host state dir
+  mkdir -p "${SOC_STATE_DIR}/state" "${SOC_SECRETS_DIR}"
+  local in_lxc_state="${SOC_STATE_DIR}/state/${component}.json"
+  if pct exec "${vmid}" -- test -f "${in_lxc_state}"; then
+    pct pull "${vmid}" "${in_lxc_state}" "${SOC_STATE_DIR}/state/${component}.json"
+  fi
+  # Pull any per-component secret files (best-effort)
+  while IFS= read -r remote; do
+    [[ -n "${remote}" ]] || continue
+    local fname
+    fname="$(basename "${remote}")"
+    pct pull "${vmid}" "${remote}" "${SOC_SECRETS_DIR}/${fname}" 2>/dev/null || true
+  done < <(pct exec "${vmid}" -- bash -c "ls ${SOC_SECRETS_DIR}/* 2>/dev/null" || true)
+
+  # Persist LXC info into host state now (after pull, so we merge on top)
+  state_set "${component}" "lxc.vmid" "${vmid}"
+  state_set "${component}" "lxc.hostname" "s3-${component}"
+  state_set "${component}" "preset" "${preset}"
 
   # Run verify.sh
   msg_info "verifying ${component}"
