@@ -128,7 +128,6 @@ services:
     environment:
       - JVM_OPTS=-Xms1024M -Xmx1024M
     command:
-      - --no-config
       - --no-config-secret
       - --secret
       - "${THEHIVE_SECRET:-thp-secret-change-me}"
