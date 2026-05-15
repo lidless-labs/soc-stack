@@ -68,8 +68,26 @@ host=localhost
 interface=${IFACE}
 EOF
 fi
-zeekctl deploy >/dev/null 2>&1 || true
-systemctl enable --now zeek.service 2>/dev/null || true
+# Write systemd unit for zeek (the LTS package doesn't ship one)
+cat > /etc/systemd/system/zeek.service <<'UEOF'
+[Unit]
+Description=Zeek Network Security Monitor
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-/opt/zeek/bin/zeekctl stop
+ExecStart=/opt/zeek/bin/zeekctl deploy
+ExecStop=/opt/zeek/bin/zeekctl stop
+Environment=PATH=/opt/zeek/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target
+UEOF
+
+systemctl daemon-reload
+systemctl enable --now zeek.service
 
 # --- Install Suricata (PPA) ---
 if ! command -v suricata >/dev/null 2>&1; then
