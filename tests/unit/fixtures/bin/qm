@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+CALLS_LOG="${MOCK_QM_CALLS_LOG:-${BATS_TEST_TMPDIR:-/tmp}/qm-calls.log}"
+echo "qm $*" >> "$CALLS_LOG"
+case "$1" in
+  list)   printf '%s\n' "${MOCK_QM_LIST:-VMID NAME              STATUS}" ;;
+  status) printf 'status: %s\n' "${MOCK_QM_STATUS:-stopped}" ;;
+  *)      : ;;
+esac
+exit "${MOCK_QM_EXIT:-0}"

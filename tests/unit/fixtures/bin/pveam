@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+CALLS_LOG="${MOCK_PVEAM_CALLS_LOG:-${BATS_TEST_TMPDIR:-/tmp}/pveam-calls.log}"
+echo "pveam $*" >> "$CALLS_LOG"
+case "$1" in
+  list)     printf '%s\n' "${MOCK_PVEAM_LIST:-local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst}" ;;
+  update)   : ;;
+  download) : ;;
+  *)        : ;;
+esac
+exit "${MOCK_PVEAM_EXIT:-0}"

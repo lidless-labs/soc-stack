@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+CALLS_LOG="${MOCK_DOCKER_CALLS_LOG:-${BATS_TEST_TMPDIR:-/tmp}/docker-calls.log}"
+echo "docker $*" >> "$CALLS_LOG"
+case "$1" in
+  ps)      printf '%s\n' "${MOCK_DOCKER_PS:-}" ;;
+  compose) printf '%s\n' "${MOCK_DOCKER_COMPOSE:-}" ;;
+  *)       : ;;
+esac
+exit "${MOCK_DOCKER_EXIT:-0}"

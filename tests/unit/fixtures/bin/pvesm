@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+CALLS_LOG="${MOCK_PVESM_CALLS_LOG:-${BATS_TEST_TMPDIR:-/tmp}/pvesm-calls.log}"
+echo "pvesm $*" >> "$CALLS_LOG"
+case "$1" in
+  status) printf '%s\n' "${MOCK_PVESM_STATUS:-Name       Type     Status   Total  Used  Available  %\nlocal      dir      active   100GB  10GB  90GB       10%\nlocal-lvm  lvmthin  active   500GB  50GB  450GB      10%}" ;;
+  *)      : ;;
+esac
+exit "${MOCK_PVESM_EXIT:-0}"
