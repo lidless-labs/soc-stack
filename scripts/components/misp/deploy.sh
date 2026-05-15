@@ -96,6 +96,7 @@ services:
       MISP_ADMIN_EMAIL: "admin@admin.test"
       MISP_ADMIN_PASSPHRASE: "admin"
       MISP_BASEURL: "https://localhost"
+      MYSQL_PASSWORD: "misp-secret"
     volumes:
       - misp-data:/var/www/MISP
     depends_on:
