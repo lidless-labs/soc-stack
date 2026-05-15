@@ -43,7 +43,7 @@ export DEBIAN_FRONTEND=noninteractive
 if [[ "${all_active}" -eq 0 ]]; then
   log "installing deps"
   apt-get update -qq
-  apt-get install -y -qq curl git ca-certificates jq
+  apt-get install -y -qq curl git ca-certificates jq openssl
 
   # Wait for DNS + connectivity (LXC may not be fully online yet)
   for _ in $(seq 1 30); do
@@ -70,7 +70,7 @@ for name in wazuh thehive cortex misp zeek suricata mitre rapid7 sophos; do
   if [[ -f "${token_file}" ]]; then
     token="$(cat "${token_file}")"
   else
-    token="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 40)"
+    token="$(openssl rand -hex 20)"
     printf '%s' "${token}" > "${token_file}"
     chmod 600 "${token_file}"
   fi
