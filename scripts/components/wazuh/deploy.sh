@@ -3,7 +3,8 @@
 # Runs INSIDE the Wazuh LXC. Idempotent. Installs Wazuh single-node.
 #
 # Required env (set by orchestrator via pct exec):
-#   SOC_STATE_DIR        - bind-mounted from /var/lib/soc-stack/ on the host
+#   SOC_STATE_DIR        - path inside the LXC (e.g. /var/lib/soc-stack);
+#                          orchestrator pulls outputs via pct pull after exit
 #   SOC_COMPONENT        - "wazuh"
 #   SOC_PRESET           - informational
 #   SOC_NON_INTERACTIVE  - "1"
@@ -71,7 +72,9 @@ apt-get install -y -qq curl wget gnupg jq
 log "Downloading Wazuh installer"
 cd /root
 curl -fsSLO https://packages.wazuh.com/4.9/wazuh-install.sh
-curl -fsSLO https://packages.wazuh.com/4.9/config.yml || cat > config.yml <<'EOF'
+# Always write our own config.yml; the upstream URL serves a template with
+# placeholder IPs that cause wazuh-install.sh --generate-config-files to fail.
+cat > config.yml <<'EOF'
 nodes:
   indexer:
     - name: node-1
