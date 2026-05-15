@@ -132,10 +132,12 @@ services:
       - --no-config-secret
       - --secret
       - "${THEHIVE_SECRET:-thp-secret-change-me}"
-      - --cql-hostnames=cassandra
-      - --index-backend=elasticsearch
-      - --es-hostnames=elasticsearch
-      - --s3-endpoint=
+      - --cql-hostnames
+      - cassandra
+      - --index-backend
+      - elasticsearch
+      - --es-hostnames
+      - elasticsearch
     restart: unless-stopped
 
   cortex:
