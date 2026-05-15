@@ -124,6 +124,74 @@ source_libs() {
   source "${LIB_DIR}/manifest.sh"
 }
 
+# Known components in canonical order
+COMPONENTS_KNOWN=("wazuh" "thehive-cortex" "misp" "zeek-suricata" "dashboards" "mcp")
+
+# expand_components <csv-or-all>
+# Echoes space-separated component names in canonical order.
+expand_components() {
+  local input="$1"
+  if [[ "${input}" == "all" ]]; then
+    printf '%s' "${COMPONENTS_KNOWN[*]}"
+    return 0
+  fi
+  local arr=()
+  # IFS=, scoped only to the read command; restored to default (space)
+  # before the final join via ${arr[*]}.
+  IFS=',' read -r -a arr <<< "${input}"
+  printf '%s' "${arr[*]}"
+}
+
+# build_manifest
+# Reads OPT_* globals, returns a manifest JSON document on stdout.
+# Returns non-zero with an error message if any component is unknown.
+build_manifest() {
+  local components_list
+  components_list="$(expand_components "${OPT_COMPONENTS}")"
+
+  # Validate each name
+  local c
+  # shellcheck disable=SC2086  # intentional word-splitting on space-separated list
+  for c in ${components_list}; do
+    local known=0
+    local k
+    for k in "${COMPONENTS_KNOWN[@]}"; do
+      [[ "${k}" == "${c}" ]] && { known=1; break; }
+    done
+    if [[ "${known}" -ne 1 ]]; then
+      printf 'unknown component: %s\n' "${c}" >&2
+      return 1
+    fi
+  done
+
+  # Build components array as JSON
+  local components_json
+  # shellcheck disable=SC2086  # intentional word-splitting on space-separated list
+  components_json="$(printf '%s\n' ${components_list} | jq -R . | jq -s .)"
+
+  jq -n \
+    --argjson components "${components_json}" \
+    --arg preset "${OPT_PRESET}" \
+    --arg bridge "${OPT_BRIDGE}" \
+    --arg storage "${OPT_STORAGE}" \
+    --arg ip_mode "${OPT_IP_MODE}" \
+    --arg ip_range "${OPT_IP_RANGE}" \
+    --arg vlan "${OPT_VLAN}" \
+    --argjson vmid_start "${OPT_VMID_START}" \
+    '{
+      components: $components,
+      preset: $preset,
+      network: {
+        bridge: $bridge,
+        storage: (if $storage == "" then null else $storage end),
+        ip_mode: $ip_mode,
+        ip_range: (if $ip_range == "" then null else $ip_range end),
+        vlan: (if $vlan == "" then null else $vlan end)
+      },
+      vmid_start: $vmid_start
+    }'
+}
+
 # main() stub - the full preflight + dispatch body lands in Task 25.
 # This stub is intentionally minimal so tests for parse_args / build_manifest
 # can source install.sh under SOC_TEST_MODE without triggering deployment logic.
