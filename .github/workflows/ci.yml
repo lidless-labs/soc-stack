@@ -62,16 +62,17 @@ jobs:
     concurrency:
       group: soc-stack-integration
       cancel-in-progress: false
+    # PR matrix covers the 3 fast components (~5-10min each on the test host).
+    # The 3 Docker-Compose-heavy components (thehive-cortex, misp, dashboards)
+    # are exercised by integration-full on merge to main, since each takes
+    # 15-30min on a constrained host and would stretch PR cycles past an hour.
     strategy:
       fail-fast: false
       max-parallel: 1
       matrix:
         component:
           - wazuh
-          - thehive-cortex
-          - misp
           - zeek-suricata
-          - dashboards
           - mcp
     steps:
       - uses: actions/checkout@v4
