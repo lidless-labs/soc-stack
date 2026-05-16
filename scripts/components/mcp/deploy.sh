@@ -43,7 +43,7 @@ export DEBIAN_FRONTEND=noninteractive
 if [[ "${all_active}" -eq 0 ]]; then
   log "installing deps"
   apt-get update -qq
-  apt-get install -y -qq curl git ca-certificates jq openssl
+  apt-get install -y -qq curl git ca-certificates jq openssl python3-pip python3-venv
 
   # Wait for DNS + connectivity (LXC may not be fully online yet)
   for _ in $(seq 1 30); do
@@ -55,6 +55,18 @@ if [[ "${all_active}" -eq 0 ]]; then
     log "installing Node.js 20"
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
     apt-get install -y -qq nodejs
+  fi
+
+  # Install mcp-proxy: bridges stdio MCP servers to SSE endpoints.
+  # The 9 MCP server repos use stdio transport (the primary MCP transport,
+  # what Claude Desktop uses directly). mcp-proxy wraps each as an SSE endpoint
+  # so remote MCP clients can connect over HTTP.
+  if [[ ! -x /usr/local/bin/mcp-proxy ]]; then
+    log "installing mcp-proxy (stdio <-> SSE bridge) into /opt/mcp-proxy venv"
+    python3 -m venv /opt/mcp-proxy
+    /opt/mcp-proxy/bin/pip install --quiet --upgrade pip
+    /opt/mcp-proxy/bin/pip install --quiet mcp-proxy
+    ln -sf /opt/mcp-proxy/bin/mcp-proxy /usr/local/bin/mcp-proxy
   fi
 fi
 
@@ -116,14 +128,14 @@ for name in wazuh thehive cortex misp zeek suricata mitre rapid7 sophos; do
   unit="/etc/systemd/system/soc-mcp-${name}.service"
   cat > "${unit}" <<UEOF
 [Unit]
-Description=SOC MCP server: ${name}
+Description=SOC MCP server: ${name} (stdio wrapped as SSE via mcp-proxy)
 After=network.target
 
 [Service]
 Type=simple
 EnvironmentFile=${env_file}
 WorkingDirectory=${dest}
-ExecStart=/usr/bin/node dist/index.js --transport sse --port \${PORT}
+ExecStart=/usr/local/bin/mcp-proxy --sse-port \${PORT} --sse-host 0.0.0.0 -- /usr/bin/node dist/index.js
 Restart=on-failure
 RestartSec=5
 
