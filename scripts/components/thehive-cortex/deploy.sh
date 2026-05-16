@@ -201,41 +201,69 @@ log "waiting for Cortex on :9001 (up to 900s)"
 wait_http "http://localhost:9001/api/status" 900 "Cortex" || write_failed "Cortex did not become ready within 900s"
 
 # --- Cortex first-run wizard ---
-log "running Cortex first-run wizard"
-# Cortex requires a session cookie + CSRF token dance
-CJAR="$(mktemp)"
-curl -sf -c "${CJAR}" "http://localhost:9001/" >/dev/null
-CSRF="$(awk '/X-XSRF-TOKEN/ || /XSRF-TOKEN/ {print $7}' "${CJAR}" | head -1)"
-# Migrate (initializes index)
-curl -sf -b "${CJAR}" -c "${CJAR}" -H "X-XSRF-TOKEN: ${CSRF}" \
-  -X POST "http://localhost:9001/api/maintenance/migrate" -d '{}' >/dev/null || true
-
+# Cortex 3.1.8 auto-initialises itself on first boot: it creates the default
+# admin user in ES with a random hashed password before the wizard can run.
+# The approach here is to reset that auto-created admin password to a known
+# value via the ES API (security is disabled), then proceed normally.
+#
+# Cortex password hash format: <ascii-salt>,<sha256(salt+password)>
+# CSRF cookie: CORTEX-XSRF-TOKEN  /  required header: X-CORTEX-XSRF-TOKEN
+log "patching Cortex admin password via Elasticsearch (auto-init workaround)"
 CORTEX_ADMIN_PASS="$(openssl rand -hex 12)"
-curl -sf -b "${CJAR}" -c "${CJAR}" -H "X-XSRF-TOKEN: ${CSRF}" \
-  -H "Content-Type: application/json" \
-  -X POST "http://localhost:9001/api/user" \
-  -d "{\"login\":\"admin\",\"name\":\"admin\",\"password\":\"${CORTEX_ADMIN_PASS}\",\"roles\":[\"superAdmin\"]}" >/dev/null
+CORTEX_PW_SALT="s3-$(openssl rand -hex 6)"
+CORTEX_PW_HASH="$(printf '%s%s' "${CORTEX_PW_SALT}" "${CORTEX_ADMIN_PASS}" | sha256sum | cut -d' ' -f1)"
+CORTEX_PW_STORED="${CORTEX_PW_SALT},${CORTEX_PW_HASH}"
 
-# Login as admin
+# Wait until the cortex_6 ES index exists (auto-init runs shortly after HTTP ready)
+es_patch_ok=0
+for _i in $(seq 1 12); do
+  if docker compose -f "${STACK_DIR}/docker-compose.yml" exec -T elasticsearch \
+       curl -sf "http://localhost:9200/cortex_6/_doc/admin?routing=admin" >/dev/null 2>&1; then
+    es_patch_ok=1; break
+  fi
+  sleep 5
+done
+(( es_patch_ok )) || write_failed "cortex_6/admin ES doc did not appear within 60s"
+
+docker compose -f "${STACK_DIR}/docker-compose.yml" exec -T elasticsearch \
+  curl -sf -X POST \
+    "http://localhost:9200/cortex_6/_update/admin?routing=admin" \
+    -H "Content-Type: application/json" \
+    -d "{\"doc\":{\"password\":\"${CORTEX_PW_STORED}\",\"updatedBy\":\"wizard\",\"updatedAt\":$(date +%s)000}}" \
+  >/dev/null || write_failed "failed to patch Cortex admin password in Elasticsearch"
+log "Cortex admin password patched"
+
+log "running Cortex first-run wizard"
+# Login, then fetch the root page to obtain the CORTEX-XSRF-TOKEN cookie.
+# Use X-CORTEX-XSRF-TOKEN header for subsequent mutating requests (per reference.conf).
+CJAR="$(mktemp)"
 curl -sf -c "${CJAR}" -H "Content-Type: application/json" \
   -X POST "http://localhost:9001/api/login" \
-  -d "{\"user\":\"admin\",\"password\":\"${CORTEX_ADMIN_PASS}\"}" >/dev/null
-CSRF="$(awk '/X-XSRF-TOKEN/ || /XSRF-TOKEN/ {print $7}' "${CJAR}" | head -1)"
+  -d "{\"user\":\"admin\",\"password\":\"${CORTEX_ADMIN_PASS}\"}" >/dev/null \
+  || write_failed "Cortex admin login failed after password patch"
+curl -sf -c "${CJAR}" -b "${CJAR}" "http://localhost:9001/" >/dev/null 2>&1
+CSRF="$(awk '/CORTEX-XSRF-TOKEN/ {print $7}' "${CJAR}" | head -1)"
 
 # Create S3-CORTEX organization
-curl -sf -b "${CJAR}" -c "${CJAR}" -H "X-XSRF-TOKEN: ${CSRF}" \
+curl -sf -b "${CJAR}" -c "${CJAR}" -H "X-CORTEX-XSRF-TOKEN: ${CSRF}" \
   -H "Content-Type: application/json" \
   -X POST "http://localhost:9001/api/organization" \
-  -d '{"name":"S3-CORTEX","description":"S3 SOC Stack Cortex org","status":"Active"}' >/dev/null
+  -d '{"name":"S3-CORTEX","description":"S3 SOC Stack Cortex org","status":"Active"}' >/dev/null \
+  || write_failed "failed to create S3-CORTEX organisation in Cortex"
 
-# Create org-admin "thehive" user (for the TheHive-to-Cortex link) and key
-curl -sf -b "${CJAR}" -c "${CJAR}" -H "X-XSRF-TOKEN: ${CSRF}" \
+# Create "thehive" user in S3-CORTEX (for the TheHive-to-Cortex link)
+curl -sf -b "${CJAR}" -c "${CJAR}" -H "X-CORTEX-XSRF-TOKEN: ${CSRF}" \
   -H "Content-Type: application/json" \
   -X POST "http://localhost:9001/api/user" \
-  -d '{"login":"thehive","name":"thehive","organization":"S3-CORTEX","roles":["read","analyze"]}' >/dev/null
+  -d '{"login":"thehive","name":"thehive","organization":"S3-CORTEX","roles":["read","analyze"]}' >/dev/null \
+  || write_failed "failed to create thehive user in Cortex"
 
-CORTEX_API_KEY="$(curl -sf -b "${CJAR}" -H "X-XSRF-TOKEN: ${CSRF}" \
-  -X POST "http://localhost:9001/api/user/thehive/key/renew" | tr -d '"')"
+CORTEX_API_KEY="$(curl -sf -b "${CJAR}" \
+  -H "X-CORTEX-XSRF-TOKEN: ${CSRF}" \
+  -H "Content-Type: application/json" \
+  -X POST "http://localhost:9001/api/user/thehive/key/renew" \
+  -d '{}' | tr -d '"')"
+[ -n "${CORTEX_API_KEY}" ] || write_failed "failed to mint Cortex API key for thehive user"
 
 # --- TheHive admin password rotation + API key ---
 log "rotating TheHive admin password + minting API key"
