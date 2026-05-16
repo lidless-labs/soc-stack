@@ -5,193 +5,231 @@
 <h1 align="center">SOC Stack</h1>
 
 <p align="center">
-  <strong>Unified deployment toolkit for security operations platforms.</strong>
+  <strong>One-shot Proxmox installer for a complete Security Operations Center.</strong>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Proxmox_VE-LXC-E57000?style=for-the-badge&logo=proxmox&logoColor=white" alt="Proxmox VE LXC">
-  <img src="https://img.shields.io/badge/Hyper--V-VMs-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Hyper-V VMs">
+  <img src="https://img.shields.io/badge/Wazuh-SIEM%2FXDR-4DAA50?style=for-the-badge" alt="Wazuh">
+  <img src="https://img.shields.io/badge/TheHive_%2B_Cortex-Case_%2B_SOAR-f59e0b?style=for-the-badge" alt="TheHive and Cortex">
+  <img src="https://img.shields.io/badge/MISP-Threat_Intel-7c3aed?style=for-the-badge" alt="MISP">
+  <img src="https://img.shields.io/badge/Zeek_%2B_Suricata-NSM%2FIDS-2a5db0?style=for-the-badge" alt="Zeek and Suricata">
+  <img src="https://img.shields.io/badge/MCP-9_servers-555?style=for-the-badge" alt="MCP servers">
   <img src="https://img.shields.io/badge/Docker_Compose-stacks-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker Compose stacks">
-  <img src="https://img.shields.io/badge/cloud--init-automation-6f42c1?style=for-the-badge" alt="cloud-init automation">
   <img src="https://img.shields.io/badge/Bash-installers-4EAA25?style=for-the-badge&logo=gnubash&logoColor=white" alt="Bash installers">
-  <img src="https://img.shields.io/badge/PowerShell-Hyper--V-5391FE?style=for-the-badge&logo=powershell&logoColor=white" alt="PowerShell Hyper-V">
-  <img src="https://img.shields.io/badge/TheHive_%2B_Cortex-ready-f59e0b?style=for-the-badge" alt="TheHive and Cortex ready">
-  <img src="https://img.shields.io/badge/MISP-ready-7c3aed?style=for-the-badge" alt="MISP ready">
   <img src="https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge" alt="MIT License">
 </p>
 
-A unified deployment toolkit for security operations tools. One command per tool, fully unattended from VM creation to API key generation.
+Run one command on a Proxmox host, or have an agent do it, and ~30 minutes later you have Wazuh (SIEM), TheHive + Cortex (case management + SOAR), MISP (threat intel), Zeek + Suricata (NSM + IDS), custom dashboards, and 9 MCP servers wired up and talking to each other. Non-interactive by default. Idempotent. JSON output for agents. Built for replication.
 
-Two deployment paths:
-- **Proxmox VE** - One-liner LXC creation scripts (community-scripts.org style)
-- **Hyper-V** - PowerShell VM automation with cloud images
+## Quick start
 
-Both paths use Docker Compose stacks with automated setup scripts that handle account creation, API key generation, and service integration.
+**Full stack** (every component, sensible defaults):
+
+```bash
+curl -sSL https://raw.githubusercontent.com/solomonneas/soc-stack/main/install.sh | sudo bash
+```
+
+**Custom subset:**
+
+```bash
+curl -sSL https://raw.githubusercontent.com/solomonneas/soc-stack/main/install.sh | sudo bash -s -- \
+  --components wazuh,thehive-cortex,misp \
+  --preset standard \
+  --bridge vmbr0 --storage local-lvm
+```
+
+**Agent-driven** (fully non-interactive, structured output):
+
+```bash
+curl -sSL https://raw.githubusercontent.com/solomonneas/soc-stack/main/install.sh | sudo bash -s -- \
+  --components all \
+  --preset minimal \
+  --bridge vmbr0 --storage local-lvm --ip-mode dhcp \
+  --json-out /root/soc-stack.json \
+  --mcp-config-out /root/mcp-clients.json
+```
+
+After install:
+- `/root/soc-stack.json` lists every component with its LXC VMID, IP, ports, endpoints, and rotated credentials.
+- `/root/mcp-clients.json` is a paste-ready `mcpServers` config block for Claude Desktop, OpenClaw, or any MCP client.
+- `/var/lib/soc-stack/state/` has per-component state files used for idempotent re-runs.
+- `/var/lib/soc-stack/secrets/` has every generated credential (mode 0600, root-only) for audit recovery.
+
+Re-run the same command with `--force` to redeploy a completed component, or with `--components <one>` to add a single component to an existing install.
+
+## Components
+
+| Component | Services | LXC preset (minimal) | Ports |
+|---|---|---|---|
+| **wazuh** | Wazuh Manager, Indexer, Dashboard | 2 vCPU, 2 GB RAM, 30 GB | 443, 1514, 1515, 55000 |
+| **thehive-cortex** | TheHive 5.4, Cortex 3.1.8, Elasticsearch 7.17, Cassandra 4.1 | 2 vCPU, 4 GB RAM, 30 GB | 9000, 9001 |
+| **misp** | MISP, MariaDB 10.11, Redis 7, misp-modules | 1 vCPU, 2 GB RAM, 20 GB | 443 |
+| **zeek-suricata** | Zeek (NSM), Suricata (IDS/IPS) | 1 vCPU, 2 GB RAM, 20 GB | 47760 |
+| **dashboards** | Bro Hunter + Playbook Forge behind nginx | 1 vCPU, 1 GB RAM, 10 GB | 80, 5174, 5177 |
+| **mcp** | 9 MCP servers (wazuh, thehive, cortex, misp, zeek, suricata, mitre, rapid7, sophos) wrapped as SSE via `mcp-proxy` | 1 vCPU, 1 GB RAM, 10 GB | 3001-3009 |
+
+Each component runs in its own dedicated LXC. Components can be deployed independently or together. The orchestrator handles VMID allocation, network setup, idempotency, and cross-component integration wiring.
+
+## Cross-component integrations
+
+Configured automatically after all components deploy:
+
+- **Wazuh → TheHive**: Wazuh alerts at level 8+ forward to TheHive as alerts via a custom Python integration (`/var/ossec/integrations/custom-thehive.py`).
+- **TheHive ↔ Cortex**: TheHive's Cortex connector points at the local Cortex with an org-scoped API key.
+- **MISP → Suricata**: hourly cron pulls Snort/Suricata rules from MISP's `restSearch` endpoint into Suricata's update.d.
+- **Zeek → Wazuh**: Wazuh agent runs in the zeek-suricata LXC and forwards conn.log, dns.log, http.log, ssl.log, notice.log to the Wazuh manager.
+- **MCP servers ← all peers**: each MCP server's env file is populated with its corresponding tool's URL + API key from peer state.
 
 ## Status
 
-A unified one-shot Proxmox installer is in active development. Plan 1 ships the foundation (shared lib, per-component contract, Wazuh deployment, JSON output). The legacy paths (Hyper-V scripts, per-tool LXC one-liners) still work and remain in the repo until the migration completes in subsequent plans.
+**v0.9.0-rc1** (current): 4 of 6 components verified on real Proxmox VE. See [Known issues](#known-issues) below. Tagged 2026-05-16.
 
-**Plan 1:** Wazuh deployment via `scripts/install.sh --components wazuh --preset minimal --json-out /root/soc-stack.json`. State at `/var/lib/soc-stack/`. See [the design spec](docs/superpowers/specs/2026-05-15-soc-stack-unification-design.md).
+**v0.5.0** (2026-05-15): Foundation - shared bash lib, per-component module contract, Wazuh deployment verified end-to-end, minimal orchestrator with `--manifest` mode.
 
-**Plan 2 (v0.9.0-rc1):** TheHive+Cortex, MISP, Zeek+Suricata, Dashboards, MCP proxy bridge. Four of six components verified on Proxmox VE. See known issues below.
+**v1.0.0** (planned): Self-hosted CI on Proxmox, deletion of legacy paths, full smoke test green across all 6 components and 5 integrations.
 
-**Plan 3 (after):** Automated CI on Proxmox, README rewrite, deletion of legacy paths, v1.0.0 release.
+### Known issues
 
-## Known Issues in v0.9.0-rc1
+- **zeek-suricata: LXC DHCP race**. On busy hosts the 180-second `lxc_wait_network` can time out before DHCP completes, blocking the deploy. Workaround: re-run `install.sh --components zeek-suricata` after the network stabilises, or bump the timeout in `scripts/lib/lxc.sh`.
+- **mcp: SSE probe timing**. The MCP component deploys cleanly and writes 9 endpoint URLs + tokens to the result JSON, but if `assert-mcp.sh` runs immediately after install, `mcp-proxy` may not have bound the ports yet. Workaround: wait 30-60s after install before probing.
+- **Cross-component integrations cascade**. When one component fails, downstream integrations skip wiring. Wazuh → TheHive, MISP → Suricata, and Zeek → Wazuh all require their target peers deployed first.
 
-These were observed during the full-stack smoke test on Proxmox VE (2026-05-16):
+## Agent-friendly contract
 
-- **zeek-suricata: LXC network timeout** - LXC 9001 failed the 180-second network-ready wait during DHCP assignment. The deploy script exits before zeek-suricata/deploy.sh runs. Workaround: re-run install with only `--components zeek-suricata` after network stabilises, or increase the wait timeout in `scripts/lib/network.sh`.
-- **mcp: SSE ports not accepting connections** - The MCP component deploys and result JSON contains all 9 endpoint URLs and tokens, but curl probes to ports 3001-3009 on the LXC IP return connection-refused. The mcp-proxy process likely starts after the assert probe window. Workaround: wait 30-60 seconds after install completes before probing SSE endpoints.
-- **Cross-component integrations require all components deployed** - The Wazuh-TheHive webhook, MISP-Suricata rule feed, and Zeek-Wazuh agent wires only configure when both sides are present. A partial deployment (zeek-suricata missing) blocks 4 of 5 integration checks.
+Designed so an AI agent can SSH into a Proxmox host and one-shot a SOC. The full agent surface:
 
----
+- **Stdin is closed** under `curl | sudo bash`; the installer auto-detects this and enables `--non-interactive` mode. Every prompt becomes a flag, every default becomes an answer.
+- **Exit codes** are stable: 0 = success, 1 = preflight (bad host), 2 = validation (bad flags), 3 = component failed, 4 = integration failed, 5 = mixed state.
+- **Result JSON schema** is documented in [`docs/superpowers/specs/2026-05-15-soc-stack-unification-design.md`](docs/superpowers/specs/2026-05-15-soc-stack-unification-design.md).
+- **Idempotency**: re-running with the same flags exits in seconds if everything is already deployed (`status: "deployed"` in state). `--force` triggers redeploy.
+- **Manifest mode**: instead of dozens of flags, write a JSON manifest and pass `--manifest <path>`. CLI flags applied on top override individual manifest fields.
 
-## Quick Start
+## Flag reference
 
-### Option A: Proxmox VE (one-liner)
-
-Run on your Proxmox host:
-
-```bash
-# TheHive + Cortex
-bash -c "$(wget -qLO - https://raw.githubusercontent.com/solomonneas/soc-stack/main/proxmox/ct/thehive-cortex.sh)"
-
-# MISP
-bash -c "$(wget -qLO - https://raw.githubusercontent.com/solomonneas/soc-stack/main/proxmox/ct/misp.sh)"
+```
+--components LIST     CSV of components or "all" (default: all)
+--preset NAME         minimal | standard | production (default: standard)
+--bridge NAME         Proxmox bridge (default: vmbr0)
+--storage NAME        Storage pool (default: auto-detect)
+--ip-mode MODE        dhcp or static (default: dhcp)
+--ip-range CIDR       Required if --ip-mode=static (e.g., 192.0.2.10/24)
+--vlan TAG            Optional VLAN tag
+--vmid-start N        First VMID to allocate (default: next free)
+--manifest PATH       JSON manifest (alternative to flags)
+--state-dir PATH      State directory (default: /var/lib/soc-stack)
+--json-out PATH       Result JSON path (default: /root/soc-stack.json)
+--mcp-config-out PATH MCP client config (default: /root/mcp-clients.json)
+--log-file PATH       Install log (default: /var/log/soc-stack-install.log)
+--dry-run             Validate + plan only, no deploy
+--force               Redeploy components already marked deployed
+--no-integrate        Skip cross-component wiring phase
+--non-interactive     Hard-fail on prompts (auto when stdin is not a TTY)
+--version             Print version and exit
 ```
 
-Interactive whiptail menus let you pick CPU, RAM, disk, storage, and network. Defaults work for most setups. The script creates an LXC, installs Docker, deploys the stack, and runs the automated setup.
-
-### Option B: Hyper-V
-
-```bash
-# 1. Build cloud-init ISO (on linux-host/Linux)
-./cloud-init/build-iso.sh thehive-cortex 'MyPassword!' ~/.ssh/id_ed25519.pub
-
-# 2. SCP ISO to Hyper-V host
-scp /tmp/thehive-cortex-cidata.iso hyperv-host:C:/Users/user/Downloads/
-
-# 3. Create VM (on hyperv-host, elevated PowerShell)
-.\scripts\create-vm.ps1 -VMName "thehive-cortex" `
-    -SpecFile ".\specs\thehive-cortex.json" `
-    -CloudInitISO "C:\Users\user\Downloads\thehive-cortex-cidata.iso"
-
-# 4. Find VM IP
-.\scripts\find-vm-ip.ps1 -VMName "thehive-cortex"
-
-# 5. Deploy the stack
-scp -r stacks/thehive-cortex/ admin@<ip>:~/thehive-cortex/
-ssh admin@<ip> "cd ~/thehive-cortex && cp config.env.template .env && docker compose up -d && ./setup.sh"
-```
-
-setup.sh handles everything: waits for services, changes default passwords, generates API keys, wires integrations, saves credentials to `api-keys.txt`.
-
-## Supported Stacks
-
-| Stack | Services | Status |
-|-------|----------|--------|
-| [thehive-cortex](stacks/thehive-cortex/) | TheHive 5.4, Cortex 3.1.8, Elasticsearch 7.17, Cassandra 4.1 | Ready |
-| [misp](stacks/misp/) | MISP (latest), MariaDB 10.11, Redis 7 | Ready |
-| wazuh | Wazuh 4.x (SIEM/XDR) | Planned |
-| zeek-suricata | Zeek + Suricata (NSM/IDS) | Planned |
-| opencti | OpenCTI (Threat Intelligence) | Planned |
-
-## Repository Structure
+## Repository structure
 
 ```
 soc-stack/
-├── README.md
-├── proxmox/                   # Proxmox VE deployment (community-scripts style)
-│   ├── ct/
-│   │   ├── thehive-cortex.sh  # One-liner: creates LXC + installs stack
-│   │   └── misp.sh
-│   ├── install/
-│   │   ├── thehive-cortex-install.sh  # Runs inside LXC: Docker + stack + setup
-│   │   └── misp-install.sh
-│   └── misc/
-│       └── soc-stack.func     # Shared helpers (whiptail, LXC creation, logging)
-├── scripts/                   # Hyper-V deployment
-│   ├── create-vm.ps1          # Cloud image -> VHDX -> VM
-│   ├── destroy-vm.ps1         # Clean teardown
-│   └── find-vm-ip.ps1        # ARP scan for Hyper-V MAC prefix
-├── cloud-init/
-│   ├── base-user-data.yaml    # Template: users, packages, docker
-│   ├── base-meta-data.yaml    # Template: instance-id, hostname
-│   ├── base-network-config.yaml # hv_netvsc DHCP config (CRITICAL)
-│   └── build-iso.sh          # genisoimage wrapper (runs on Linux)
-├── stacks/                    # Shared: Docker Compose + setup.sh per tool
-│   ├── thehive-cortex/
-│   │   ├── docker-compose.yml
-│   │   ├── setup.sh          # Automated: accounts, API keys, integration
-│   │   ├── deploy.md
-│   │   └── config.env.template
-│   ├── misp/
-│   │   ├── docker-compose.yml
-│   │   ├── setup.sh
-│   │   ├── deploy.md
-│   │   └── config.env.template
-│   ├── wazuh/                 # Planned
-│   ├── zeek-suricata/         # Planned
-│   └── opencti/               # Planned
-├── specs/
-│   ├── defaults.json          # Default switch, image path, credentials
-│   ├── thehive-cortex.json    # VM specs + service metadata
-│   └── misp.json
+├── install.sh                  # repo-root wrapper for curl|bash
+├── scripts/
+│   ├── install.sh              # orchestrator (~430 lines)
+│   ├── lib/                    # 8 shared bash modules (bats-tested)
+│   │   ├── logging.sh
+│   │   ├── secrets.sh
+│   │   ├── json-out.sh
+│   │   ├── idempotency.sh
+│   │   ├── network.sh
+│   │   ├── manifest.sh
+│   │   ├── preflight.sh
+│   │   └── lxc.sh
+│   └── components/
+│       ├── wazuh/              # manifest.jsonc + 5 scripts per component
+│       ├── thehive-cortex/
+│       ├── misp/
+│       ├── zeek-suricata/
+│       ├── dashboards/
+│       └── mcp/                # 9 MCP servers + mcp-proxy SSE bridge
+├── tests/
+│   ├── unit/                   # 78 bats tests, mocked Proxmox binaries
+│   └── integration/            # per-component + cross-component assertions
 ├── docs/
-│   ├── gotchas.md             # Consolidated from production deployments
-│   └── adding-a-stack.md      # How to add a new tool
-├── reference/
-│   └── hyper-v/
-│       ├── vm-automation-guide.md
-│       └── thehive-cortex-setup-guide.md
-├── playbooks/                 # Incident response playbooks
-├── cases/                     # Case study evidence
-└── mcp-servers/               # MCP server connectors (separate concern)
+│   ├── superpowers/
+│   │   ├── specs/              # design specs
+│   │   └── plans/              # implementation plans
+│   ├── gotchas.md
+│   ├── adding-a-stack.md       # to be renamed adding-a-component.md in v1.0.0
+│   └── architecture/
+├── playbooks/                  # incident response playbooks
+├── cases/                      # case study evidence
+└── mcp-servers/
+    └── README.md               # index of the 9 MCP servers (each in its own repo)
 ```
 
-## Design Decisions
+## How it works
 
-1. **PowerShell on Windows, Bash on Linux.** `create-vm.ps1` runs on the Hyper-V host (hyperv-host). `build-iso.sh` and `setup.sh` run on Linux. No mixing.
+Each component is a self-contained folder under `scripts/components/<name>/` with a fixed interface:
 
-2. **Spec files define VM requirements.** `create-vm.ps1` reads JSON specs for cores, RAM, disk. Human-readable and version-controlled.
+| File | Runs where | Purpose |
+|---|---|---|
+| `manifest.jsonc` | (declarative) | Presets, ports, deps, provides |
+| `lxc-spec.sh` | Proxmox host | Emits `pct create` flags per preset |
+| `deploy.sh` | inside LXC | Idempotent installer; writes state JSON |
+| `verify.sh` | inside LXC | Health check; exit 0 if healthy |
+| `integrate.sh` | Proxmox host | Wires this component to peers (reads peer state) |
+| `destroy.sh` | Proxmox host | Tears down the LXC + state |
 
-3. **setup.sh per stack.** Each stack has a setup script that handles everything post-SSH: docker compose up, wait for health, create accounts, generate keys, wire integrations. This is where all the gotchas live (CSRF tokens, password endpoints, buffer sizes).
+The orchestrator (`scripts/install.sh`) only talks to components through this interface. Adding a new component means dropping in a new folder; nothing else changes.
 
-4. **config.env.template files.** Sane defaults, copy to `.env` and customize. Not committed to git. `setup.sh` still supports legacy `config.env` files, but Docker Compose auto-loads `.env`.
-
-5. **Shared cloud-init templates.** Base user-data, meta-data, and network-config are shared. Stack-specific packages can be added via the spec file or manually.
+State files in `/var/lib/soc-stack/state/<name>.json` are the source of truth for idempotency. Re-running `install.sh` checks each component's state and skips anything already deployed (unless `--force`). On failure, the state file records `status: "failed"` and an `error` string; the orchestrator continues with remaining independent components and reports mixed-state exit code 5.
 
 ## Prerequisites
 
-**On the Hyper-V host (hyperv-host / Windows):**
-- Hyper-V enabled
-- qemu-img installed (`choco install qemu -y`)
-- A Hyper-V virtual switch (`DNS-NIC-Switch` by default)
+- Proxmox VE 7.x or 8.x or 9.x host
+- Root access on the Proxmox host
+- A bridge (default: `vmbr0`) and a storage pool (default: auto-detect, falls back to `local-lvm`)
+- Outbound HTTPS for installer downloads (Docker, Wazuh installer, MCP server repos, etc.)
+- ~12 GB free RAM and ~150 GB free disk for the full stack at `--preset minimal`
 
-**On the Linux utility server (linux-host):**
-- genisoimage (`apt install genisoimage`)
-- SSH access to the Hyper-V host
-- Ubuntu 24.04 cloud image downloaded
+The installer auto-installs `jq`, `curl`, `wget`, and `openssl` if missing.
 
-**On each VM (handled by cloud-init):**
-- Docker and Docker Compose v2
-- SSH access as `admin`
+## Operations
 
-## Gotchas
+**Re-run for a single component:**
+```bash
+sudo bash install.sh --components misp --force
+```
 
-See [docs/gotchas.md](docs/gotchas.md) for the full list. The highlights:
+**Re-run only the integration phase (after fixing a peer):**
+```bash
+sudo bash install.sh --components all --no-integrate=false
+```
 
-- **Remove the VHDX sparse flag BEFORE Resize-VHD** or Hyper-V refuses to start the VM
-- **Include network-config with `match: driver: hv_netvsc`** or the VM gets zero network
-- **Cortex CSRF requires a token dance** on every POST after login
-- **TheHive password change uses POST /password/change**, not PATCH /user
-- **Set INNODB_BUFFER_POOL_SIZE=512M** for MISP on 4GB VMs or MariaDB OOMs
+**Validate without deploying:**
+```bash
+sudo bash install.sh --components all --dry-run
+```
 
-## Adding a New Stack
+**Tear down everything:**
+```bash
+for comp in mcp dashboards zeek-suricata misp thehive-cortex wazuh; do
+  sudo bash scripts/components/${comp}/destroy.sh
+done
+```
 
-See [docs/adding-a-stack.md](docs/adding-a-stack.md).
+## Adding a new component
+
+See [docs/adding-a-stack.md](docs/adding-a-stack.md) for the component contract walk-through, and [docs/superpowers/specs/2026-05-15-soc-stack-unification-design.md](docs/superpowers/specs/2026-05-15-soc-stack-unification-design.md) for the full design.
+
+## Legacy paths
+
+The repo still contains the pre-v0.5.0 deployment paths:
+
+- `proxmox/ct/*.sh` - per-tool one-liner LXC scripts (community-scripts.org style) for thehive-cortex and misp only
+- `scripts/create-vm.ps1`, `cloud-init/`, `reference/hyper-v/` - the Hyper-V VM automation path
+
+These paths still work, but the unified `install.sh` is the canonical entrypoint going forward. The legacy paths will be removed in v1.0.0.
 
 ## License
 
