@@ -85,7 +85,7 @@ lxc_exec() {
 # unit tests fast.
 lxc_wait_network() {
   local vmid="$1"
-  local timeout="${2:-240}"
+  local timeout="${2:-360}"
   local elapsed=0
   while (( elapsed < timeout )); do
     if pct exec "${vmid}" -- ping -c1 -W2 8.8.8.8 >/dev/null 2>&1; then
