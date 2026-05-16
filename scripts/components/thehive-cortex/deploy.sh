@@ -173,6 +173,30 @@ wait_http() {
   return 1
 }
 
+log "waiting for Cassandra cluster to become operational (up to 600s)"
+cassandra_ok=0
+elapsed=0
+while (( elapsed < 600 )); do
+  # nodetool exits 0 only when at least one node reports UN (Up Normal)
+  if docker compose -f "${STACK_DIR}/docker-compose.yml" exec -T cassandra nodetool status 2>/dev/null | grep -qE '^UN '; then
+    cassandra_ok=1
+    log "Cassandra cluster up after ${elapsed}s"
+    break
+  fi
+  sleep 10
+  elapsed=$((elapsed + 10))
+  (( elapsed % 60 == 0 )) && log "  ... cassandra not ready, ${elapsed}s elapsed"
+done
+
+if (( cassandra_ok != 1 )); then
+  write_failed "Cassandra did not become operational within 600s"
+fi
+
+# Restart TheHive now that Cassandra is ready, so it gets a clean boot
+log "restarting TheHive after Cassandra ready"
+docker compose -f "${STACK_DIR}/docker-compose.yml" restart thehive
+sleep 5
+
 log "waiting for TheHive on :9000 (up to 900s)"
 wait_http "http://localhost:9000/api/status" 900 "TheHive" || write_failed "TheHive did not become ready within 900s"
 log "waiting for Cortex on :9001 (up to 900s)"
