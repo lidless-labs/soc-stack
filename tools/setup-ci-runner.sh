@@ -92,12 +92,16 @@ echo "${RUNNER_PUBKEY}" > /home/gh-runner/.ssh/authorized_keys
 chmod 600 /home/gh-runner/.ssh/authorized_keys
 chown gh-runner:gh-runner /home/gh-runner/.ssh/authorized_keys
 
-# Sudoers entry - scoped to pct/qm/pvesm/pveam only
+# Sudoers entry
 SUDOFILE="/etc/sudoers.d/gh-runner-soc-stack"
 cat > "${SUDOFILE}" <<'EOF'
-# Scoped sudoer for the soc-stack CI runner.
-# Only allows the four binaries needed to manage test LXCs/VMs.
-gh-runner ALL=(root) NOPASSWD: /usr/sbin/pct, /usr/sbin/qm, /usr/sbin/pvesm, /usr/sbin/pveam
+# CI runner sudoer for soc-stack.
+# Allows the four Proxmox binaries directly, plus bash for running the install
+# scripts (which internally call pct/qm/pvesm/pveam). The bash entry makes
+# gh-runner effectively root-equivalent inside the soc-stack work directory;
+# this is acceptable for a dedicated CI runner LXC but should not be replicated
+# for general-purpose accounts.
+gh-runner ALL=(root) NOPASSWD: /usr/sbin/pct, /usr/sbin/qm, /usr/sbin/pvesm, /usr/sbin/pveam, /usr/bin/bash, /bin/bash
 Defaults:gh-runner !requiretty
 EOF
 chmod 0440 "${SUDOFILE}"
