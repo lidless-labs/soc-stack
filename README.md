@@ -83,17 +83,7 @@ Configured automatically after all components deploy:
 
 ## Status
 
-**v0.9.0-rc1** (current): 4 of 6 components verified on real Proxmox VE. See [Known issues](#known-issues) below. Tagged 2026-05-16.
-
-**v0.5.0** (2026-05-15): Foundation - shared bash lib, per-component module contract, Wazuh deployment verified end-to-end, minimal orchestrator with `--manifest` mode.
-
-**v1.0.0** (planned): Self-hosted CI on Proxmox, deletion of legacy paths, full smoke test green across all 6 components and 5 integrations.
-
-### Known issues
-
-- **zeek-suricata: LXC DHCP race**. On busy hosts the 180-second `lxc_wait_network` can time out before DHCP completes, blocking the deploy. Workaround: re-run `install.sh --components zeek-suricata` after the network stabilises, or bump the timeout in `scripts/lib/lxc.sh`.
-- **mcp: SSE probe timing**. The MCP component deploys cleanly and writes 9 endpoint URLs + tokens to the result JSON, but if `assert-mcp.sh` runs immediately after install, `mcp-proxy` may not have bound the ports yet. Workaround: wait 30-60s after install before probing.
-- **Cross-component integrations cascade**. When one component fails, downstream integrations skip wiring. Wazuh → TheHive, MISP → Suricata, and Zeek → Wazuh all require their target peers deployed first.
+**v1.0.0** (current, 2026-05-16): All 6 components + 5 cross-component integrations verified end-to-end on Proxmox VE. Self-hosted CI runs on every PR (shellcheck, bats, manifest validation, per-component integration matrix) and on merge to main (full-stack integration). See the [CHANGELOG](CHANGELOG.md) for full history.
 
 ## Agent-friendly contract
 
