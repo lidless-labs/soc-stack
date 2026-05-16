@@ -35,6 +35,12 @@ rsync -a --delete \
   --exclude='tests/vendor/bats-support/.git' --exclude='tests/vendor/bats-assert/.git' \
   "${GITHUB_WORKSPACE}/" "${PROXMOX_HOST}:${WORK_DIR}/"
 
+# Wipe any stale state from prior CI runs - matrix jobs share /tmp/soc-stack-test/
+# and a left-behind state file would cause install.sh's idempotency check to skip
+# the actual deploy and falsely claim success.
+# shellcheck disable=SC2029
+ssh "${PROXMOX_HOST}" "sudo rm -f /tmp/soc-stack-test/state/${TARGET}.json /tmp/soc-stack-test/vmid-${TARGET}.txt"
+
 # Set up test env (allocates VMID)
 # shellcheck disable=SC2029
 ssh "${PROXMOX_HOST}" "sudo bash ${WORK_DIR}/tests/integration/setup-test-env.sh '${TARGET}'"
