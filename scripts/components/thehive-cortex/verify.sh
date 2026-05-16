@@ -19,11 +19,14 @@ for svc_url in \
   fi
 done
 
-# Compose-level health
-if ! docker compose -f /opt/soc-stack/thehive-cortex/docker-compose.yml ps 2>/dev/null \
-     | grep -E '(thehive|cortex)' | grep -qE 'Up'; then
-  echo '[verify] one or more compose services not running' >&2
-  fail=1
-fi
+# Compose-level health: both thehive and cortex services must be running
+services_running="$(docker compose -f /opt/soc-stack/thehive-cortex/docker-compose.yml ps \
+                     --filter "status=running" --services 2>/dev/null || true)"
+for s in thehive cortex; do
+  if ! grep -qx "${s}" <<< "${services_running}"; then
+    printf '[verify] compose service %s not running\n' "${s}" >&2
+    fail=1
+  fi
+done
 
 exit "${fail}"

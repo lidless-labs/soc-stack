@@ -173,14 +173,16 @@ wait_http() {
   return 1
 }
 
-log "waiting for Cassandra cluster to become operational (up to 600s)"
+log "waiting for Cassandra to accept CQL connections on :9042 (up to 600s)"
 cassandra_ok=0
 elapsed=0
 while (( elapsed < 600 )); do
-  # nodetool exits 0 only when at least one node reports UN (Up Normal)
-  if docker compose -f "${STACK_DIR}/docker-compose.yml" exec -T cassandra nodetool status 2>/dev/null | grep -qE '^UN '; then
+  # Use a bare TCP probe via bash /dev/tcp to avoid JVM_OPTS env contamination
+  # of nodetool (cassandra's JVM_OPTS heap settings break nodetool's own JVM startup).
+  if timeout 3 bash -c 'cat < /dev/tcp/cassandra/9042' >/dev/null 2>&1 \
+     || docker compose -f "${STACK_DIR}/docker-compose.yml" exec -T cassandra bash -c 'cat < /dev/tcp/127.0.0.1/9042' >/dev/null 2>&1; then
     cassandra_ok=1
-    log "Cassandra cluster up after ${elapsed}s"
+    log "Cassandra accepting CQL on :9042 after ${elapsed}s"
     break
   fi
   sleep 10
@@ -189,8 +191,11 @@ while (( elapsed < 600 )); do
 done
 
 if (( cassandra_ok != 1 )); then
-  write_failed "Cassandra did not become operational within 600s"
+  write_failed "Cassandra did not accept CQL within 600s"
 fi
+
+# Give Cassandra a moment after accepting connections to finish keyspace creation
+sleep 15
 
 # Restart TheHive now that Cassandra is ready, so it gets a clean boot
 log "restarting TheHive after Cassandra ready"
