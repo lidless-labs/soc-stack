@@ -64,12 +64,21 @@ if systemctl is-active --quiet wazuh-manager 2>/dev/null \
 fi
 
 # Fresh install
+
+# Wazuh-install hardware check: required on minimal preset (2GB/1c), not needed
+# on standard (4GB/2c) or production (8GB/4c) which already meet the upstream
+# 4GB/2c floor.
+WAZUH_INSTALL_FLAGS=""
+if [[ "${SOC_PRESET:-standard}" == "minimal" ]]; then
+  WAZUH_INSTALL_FLAGS="-i"
+  log "preset=minimal: passing -i to wazuh-install.sh to skip hardware check"
+fi
+
 log "Updating apt"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq curl wget gnupg jq
 
-log "Using -i (ignore hardware check) for wazuh-install.sh - suitable for lab/dev; production should use --preset standard or higher"
 log "Downloading Wazuh installer"
 cd /root
 curl -fsSLO https://packages.wazuh.com/4.9/wazuh-install.sh
@@ -89,11 +98,16 @@ nodes:
 EOF
 
 log "Running wazuh-install.sh (this may take 10-20 minutes)"
-bash wazuh-install.sh -i --generate-config-files
-bash wazuh-install.sh -i --wazuh-indexer node-1
-bash wazuh-install.sh -i --start-cluster
-bash wazuh-install.sh -i --wazuh-server wazuh-1
-bash wazuh-install.sh -i --wazuh-dashboard dashboard
+# shellcheck disable=SC2086
+bash wazuh-install.sh ${WAZUH_INSTALL_FLAGS} --generate-config-files
+# shellcheck disable=SC2086
+bash wazuh-install.sh ${WAZUH_INSTALL_FLAGS} --wazuh-indexer node-1
+# shellcheck disable=SC2086
+bash wazuh-install.sh ${WAZUH_INSTALL_FLAGS} --start-cluster
+# shellcheck disable=SC2086
+bash wazuh-install.sh ${WAZUH_INSTALL_FLAGS} --wazuh-server wazuh-1
+# shellcheck disable=SC2086
+bash wazuh-install.sh ${WAZUH_INSTALL_FLAGS} --wazuh-dashboard dashboard
 
 # Extract the generated admin password from wazuh-passwords.txt
 ADMIN_PASS=""
