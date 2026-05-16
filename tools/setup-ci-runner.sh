@@ -103,6 +103,36 @@ EOF
 chmod 0440 "${SUDOFILE}"
 visudo -c -f "${SUDOFILE}" >/dev/null
 
+# ---- 3b. SSH plumbing for the `runner` user inside the LXC ----
+PROXMOX_HOST_IP="$(hostname -I | awk '{print $1}')"
+log "wiring SSH from runner user to ${PROXMOX_HOST_IP} (alias 'proxmox')"
+
+# /etc/hosts inside the runner LXC (idempotent)
+if ! pct exec "${VMID}" -- grep -qE "^[0-9.]+[[:space:]]+proxmox([[:space:]]|\$)" /etc/hosts; then
+  pct exec "${VMID}" -- bash -c "echo '${PROXMOX_HOST_IP} proxmox' >> /etc/hosts"
+fi
+
+# Copy the SSH key to /home/runner/.ssh and write the SSH config
+pct exec "${VMID}" -- bash -c '
+  useradd -m -s /bin/bash runner 2>/dev/null || true
+  install -d -m 0700 -o runner -g runner /home/runner/.ssh
+  cp /root/.ssh/id_ed25519 /home/runner/.ssh/id_ed25519
+  cp /root/.ssh/id_ed25519.pub /home/runner/.ssh/id_ed25519.pub
+  chmod 600 /home/runner/.ssh/id_ed25519
+  chmod 644 /home/runner/.ssh/id_ed25519.pub
+  chown runner:runner /home/runner/.ssh/id_ed25519 /home/runner/.ssh/id_ed25519.pub
+
+  cat > /home/runner/.ssh/config <<SSHEOF
+Host proxmox
+  HostName proxmox
+  User gh-runner
+  IdentityFile /home/runner/.ssh/id_ed25519
+  StrictHostKeyChecking accept-new
+SSHEOF
+  chmod 600 /home/runner/.ssh/config
+  chown runner:runner /home/runner/.ssh/config
+'
+
 # ---- 4. github-actions-runner inside the LXC ----
 if ! pct exec "${VMID}" -- test -f /home/runner/.runner; then
   log "installing github-actions-runner inside LXC ${VMID}"
