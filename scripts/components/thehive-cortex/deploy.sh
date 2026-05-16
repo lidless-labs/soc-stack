@@ -91,7 +91,8 @@ apt-get update -qq
 apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
 log "writing docker-compose.yml"
-cat > "${STACK_DIR}/docker-compose.yml" <<'COMPOSE_EOF'
+: "${THEHIVE_SECRET:=$(openssl rand -base64 32 | tr -d '=' | head -c 40)}"
+cat > "${STACK_DIR}/docker-compose.yml" <<COMPOSE_EOF
 services:
   cassandra:
     image: cassandra:4.1
@@ -127,10 +128,9 @@ services:
     ports: ["9000:9000"]
     environment:
       - JVM_OPTS=-Xms1024M -Xmx1024M
+      - PLAY_HTTP_SECRET=${THEHIVE_SECRET}
     command:
       - --no-config-secret
-      - --secret
-      - "${THEHIVE_SECRET:-thp-secret-change-me}"
       - --cql-hostnames
       - cassandra
       - --index-backend
