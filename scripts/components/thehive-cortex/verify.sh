@@ -21,7 +21,7 @@ done
 
 # Compose-level health
 if ! docker compose -f /opt/soc-stack/thehive-cortex/docker-compose.yml ps 2>/dev/null \
-     | grep -E '(thehive|cortex)' | grep -q running; then
+     | grep -E '(thehive|cortex)' | grep -qE 'Up'; then
   echo '[verify] one or more compose services not running' >&2
   fail=1
 fi

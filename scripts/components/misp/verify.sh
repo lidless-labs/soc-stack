@@ -13,7 +13,7 @@ if [[ "${code}" -lt 200 || "${code}" -ge 500 ]]; then
 fi
 
 if ! docker compose -f /opt/soc-stack/misp/docker-compose.yml ps 2>/dev/null \
-     | grep -q "misp-core.*running"; then
+     | grep -qE "misp-core.*Up"; then
   echo '[verify] misp-core not running' >&2
   fail=1
 fi
