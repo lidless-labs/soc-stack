@@ -38,8 +38,10 @@ write_failed() {
 trap 'write_failed "deploy.sh aborted on line $LINENO"' ERR
 
 # --- Idempotency: already running and healthy? ---
-if docker compose -f "${STACK_DIR}/docker-compose.yml" ps 2>/dev/null | grep -q "thehive.*running" \
-   && docker compose -f "${STACK_DIR}/docker-compose.yml" ps 2>/dev/null | grep -q "cortex.*running"; then
+services_running="$(docker compose -f "${STACK_DIR}/docker-compose.yml" ps \
+                     --filter "status=running" --services 2>/dev/null || true)"
+if grep -qx "thehive" <<< "${services_running}" \
+   && grep -qx "cortex" <<< "${services_running}"; then
   log "stack already running, refreshing state"
   IP="$(hostname -I | awk '{print $1}')"
 
@@ -91,7 +93,8 @@ apt-get update -qq
 apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
 log "writing docker-compose.yml"
-cat > "${STACK_DIR}/docker-compose.yml" <<'COMPOSE_EOF'
+: "${THEHIVE_SECRET:=$(openssl rand -base64 32 | tr -d '=' | head -c 40)}"
+cat > "${STACK_DIR}/docker-compose.yml" <<COMPOSE_EOF
 services:
   cassandra:
     image: cassandra:4.1
@@ -127,10 +130,8 @@ services:
     ports: ["9000:9000"]
     environment:
       - JVM_OPTS=-Xms1024M -Xmx1024M
+      - TH_SECRET=${THEHIVE_SECRET}
     command:
-      - --no-config-secret
-      - --secret
-      - "${THEHIVE_SECRET:-thp-secret-change-me}"
       - --cql-hostnames
       - cassandra
       - --index-backend
@@ -173,14 +174,16 @@ wait_http() {
   return 1
 }
 
-log "waiting for Cassandra to accept CQL connections on :9042 (up to 600s)"
+log "waiting for Cassandra to accept CQL connections on :9042 (up to 900s)"
 cassandra_ok=0
 elapsed=0
-while (( elapsed < 600 )); do
-  # Use a bare TCP probe via bash /dev/tcp to avoid JVM_OPTS env contamination
-  # of nodetool (cassandra's JVM_OPTS heap settings break nodetool's own JVM startup).
-  if timeout 3 bash -c 'cat < /dev/tcp/cassandra/9042' >/dev/null 2>&1 \
-     || timeout 5 docker compose -f "${STACK_DIR}/docker-compose.yml" exec -T cassandra bash -c 'cat < /dev/tcp/127.0.0.1/9042' >/dev/null 2>&1; then
+while (( elapsed < 900 )); do
+  # Probe Cassandra native transport via a no-data bash /dev/tcp open.
+  # `cat` hangs waiting for the server to send data (Cassandra never sends first),
+  # so use `:` (bash no-op) which exits immediately after the TCP handshake.
+  # Run inside the cassandra container so Docker DNS resolution is not needed.
+  if timeout 5 docker compose -f "${STACK_DIR}/docker-compose.yml" \
+       exec -T cassandra bash -c ': < /dev/tcp/127.0.0.1/9042' >/dev/null 2>&1; then
     cassandra_ok=1
     log "Cassandra accepting CQL on :9042 after ${elapsed}s"
     break
@@ -191,58 +194,85 @@ while (( elapsed < 600 )); do
 done
 
 if (( cassandra_ok != 1 )); then
-  write_failed "Cassandra did not accept CQL within 600s"
+  write_failed "Cassandra did not accept CQL within 900s"
 fi
 
-# Give Cassandra a moment after accepting connections to finish keyspace creation
-sleep 15
-
-# Restart TheHive now that Cassandra is ready, so it gets a clean boot
-log "restarting TheHive after Cassandra ready"
-docker compose -f "${STACK_DIR}/docker-compose.yml" restart thehive
-sleep 5
-
-log "waiting for TheHive on :9000 (up to 900s)"
-wait_http "http://localhost:9000/api/status" 900 "TheHive" || write_failed "TheHive did not become ready within 900s"
+log "waiting for TheHive on :9000 (up to 1200s)"
+wait_http "http://localhost:9000/api/status" 1200 "TheHive" || write_failed "TheHive did not become ready within 1200s"
 log "waiting for Cortex on :9001 (up to 900s)"
 wait_http "http://localhost:9001/api/status" 900 "Cortex" || write_failed "Cortex did not become ready within 900s"
 
 # --- Cortex first-run wizard ---
-log "running Cortex first-run wizard"
-# Cortex requires a session cookie + CSRF token dance
-CJAR="$(mktemp)"
-curl -sf -c "${CJAR}" "http://localhost:9001/" >/dev/null
-CSRF="$(awk '/X-XSRF-TOKEN/ || /XSRF-TOKEN/ {print $7}' "${CJAR}" | head -1)"
-# Migrate (initializes index)
-curl -sf -b "${CJAR}" -c "${CJAR}" -H "X-XSRF-TOKEN: ${CSRF}" \
-  -X POST "http://localhost:9001/api/maintenance/migrate" -d '{}' >/dev/null || true
-
+# Cortex 3.1.8 auto-initialises itself on first boot: it creates the default
+# admin user in ES with a random hashed password before the wizard can run.
+# The approach here is to reset that auto-created admin password to a known
+# value via the ES API (security is disabled), then proceed normally.
+#
+# Cortex password hash format: <ascii-salt>,<sha256(salt+password)>
+# CSRF cookie: CORTEX-XSRF-TOKEN  /  required header: X-CORTEX-XSRF-TOKEN
+log "patching Cortex admin password via Elasticsearch (auto-init workaround)"
 CORTEX_ADMIN_PASS="$(openssl rand -hex 12)"
-curl -sf -b "${CJAR}" -c "${CJAR}" -H "X-XSRF-TOKEN: ${CSRF}" \
-  -H "Content-Type: application/json" \
-  -X POST "http://localhost:9001/api/user" \
-  -d "{\"login\":\"admin\",\"name\":\"admin\",\"password\":\"${CORTEX_ADMIN_PASS}\",\"roles\":[\"superAdmin\"]}" >/dev/null
+CORTEX_PW_SALT="s3-$(openssl rand -hex 6)"
+CORTEX_PW_HASH="$(printf '%s%s' "${CORTEX_PW_SALT}" "${CORTEX_ADMIN_PASS}" | sha256sum | cut -d' ' -f1)"
+CORTEX_PW_STORED="${CORTEX_PW_SALT},${CORTEX_PW_HASH}"
 
-# Login as admin
+# Wait until the cortex_6 ES index exists (auto-init runs shortly after HTTP ready)
+# Auto-init can take up to 3 minutes; poll every 5s for up to 180s.
+log "waiting for Cortex auto-init to populate cortex_6/admin in Elasticsearch (up to 180s)"
+es_patch_ok=0
+es_elapsed=0
+while (( es_elapsed < 180 )); do
+  if docker compose -f "${STACK_DIR}/docker-compose.yml" exec -T elasticsearch \
+       curl -sf "http://localhost:9200/cortex_6/_doc/admin?routing=admin" >/dev/null 2>&1; then
+    es_patch_ok=1
+    log "cortex_6/admin appeared after ${es_elapsed}s"
+    break
+  fi
+  sleep 5
+  es_elapsed=$((es_elapsed + 5))
+  (( es_elapsed % 30 == 0 )) && log "  ... cortex_6/admin not yet, ${es_elapsed}s elapsed"
+done
+(( es_patch_ok )) || write_failed "cortex_6/admin ES doc did not appear within 180s"
+
+docker compose -f "${STACK_DIR}/docker-compose.yml" exec -T elasticsearch \
+  curl -sf -X POST \
+    "http://localhost:9200/cortex_6/_update/admin?routing=admin" \
+    -H "Content-Type: application/json" \
+    -d "{\"doc\":{\"password\":\"${CORTEX_PW_STORED}\",\"updatedBy\":\"wizard\",\"updatedAt\":$(date +%s)000}}" \
+  >/dev/null || write_failed "failed to patch Cortex admin password in Elasticsearch"
+log "Cortex admin password patched"
+
+log "running Cortex first-run wizard"
+# Login, then fetch the root page to obtain the CORTEX-XSRF-TOKEN cookie.
+# Use X-CORTEX-XSRF-TOKEN header for subsequent mutating requests (per reference.conf).
+CJAR="$(mktemp)"
 curl -sf -c "${CJAR}" -H "Content-Type: application/json" \
   -X POST "http://localhost:9001/api/login" \
-  -d "{\"user\":\"admin\",\"password\":\"${CORTEX_ADMIN_PASS}\"}" >/dev/null
-CSRF="$(awk '/X-XSRF-TOKEN/ || /XSRF-TOKEN/ {print $7}' "${CJAR}" | head -1)"
+  -d "{\"user\":\"admin\",\"password\":\"${CORTEX_ADMIN_PASS}\"}" >/dev/null \
+  || write_failed "Cortex admin login failed after password patch"
+curl -sf -c "${CJAR}" -b "${CJAR}" "http://localhost:9001/" >/dev/null 2>&1
+CSRF="$(awk '/CORTEX-XSRF-TOKEN/ {print $7}' "${CJAR}" | head -1)"
 
 # Create S3-CORTEX organization
-curl -sf -b "${CJAR}" -c "${CJAR}" -H "X-XSRF-TOKEN: ${CSRF}" \
+curl -sf -b "${CJAR}" -c "${CJAR}" -H "X-CORTEX-XSRF-TOKEN: ${CSRF}" \
   -H "Content-Type: application/json" \
   -X POST "http://localhost:9001/api/organization" \
-  -d '{"name":"S3-CORTEX","description":"S3 SOC Stack Cortex org","status":"Active"}' >/dev/null
+  -d '{"name":"S3-CORTEX","description":"S3 SOC Stack Cortex org","status":"Active"}' >/dev/null \
+  || write_failed "failed to create S3-CORTEX organisation in Cortex"
 
-# Create org-admin "thehive" user (for the TheHive-to-Cortex link) and key
-curl -sf -b "${CJAR}" -c "${CJAR}" -H "X-XSRF-TOKEN: ${CSRF}" \
+# Create "thehive" user in S3-CORTEX (for the TheHive-to-Cortex link)
+curl -sf -b "${CJAR}" -c "${CJAR}" -H "X-CORTEX-XSRF-TOKEN: ${CSRF}" \
   -H "Content-Type: application/json" \
   -X POST "http://localhost:9001/api/user" \
-  -d '{"login":"thehive","name":"thehive","organization":"S3-CORTEX","roles":["read","analyze"]}' >/dev/null
+  -d '{"login":"thehive","name":"thehive","organization":"S3-CORTEX","roles":["read","analyze"]}' >/dev/null \
+  || write_failed "failed to create thehive user in Cortex"
 
-CORTEX_API_KEY="$(curl -sf -b "${CJAR}" -H "X-XSRF-TOKEN: ${CSRF}" \
-  -X POST "http://localhost:9001/api/user/thehive/key/renew" | tr -d '"')"
+CORTEX_API_KEY="$(curl -sf -b "${CJAR}" \
+  -H "X-CORTEX-XSRF-TOKEN: ${CSRF}" \
+  -H "Content-Type: application/json" \
+  -X POST "http://localhost:9001/api/user/thehive/key/renew" \
+  -d '{}' | tr -d '"')"
+[ -n "${CORTEX_API_KEY}" ] || write_failed "failed to mint Cortex API key for thehive user"
 
 # --- TheHive admin password rotation + API key ---
 log "rotating TheHive admin password + minting API key"

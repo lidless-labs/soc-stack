@@ -1,31 +1,99 @@
 name: CI
 
 on:
-  push:
   pull_request:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  validate:
-    name: Validate scripts and specs
+  shellcheck:
+    name: Shellcheck
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install validation tools
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+      - name: Shellcheck all bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y shellcheck jq
+          shellcheck --severity=warning install.sh
+          shellcheck --severity=warning scripts/install.sh
+          shellcheck --severity=warning scripts/lib/*.sh
+          shellcheck --severity=warning scripts/components/*/*.sh
+          shellcheck --severity=warning tests/integration/*.sh
+          shellcheck --severity=warning tools/*.sh
 
-      - name: Check shell syntax
-        run: |
-          find . -type f -name '*.sh' -print0 | sort -z | xargs -0 -n1 bash -n
+  unit-tests:
+    name: Bats unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install jq
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+      - name: Run bats
+        run: ./tests/unit/run.sh
 
-      - name: Run ShellCheck errors
+  manifest-schema:
+    name: Component manifest validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install jq
+        run: sudo apt-get install -y -qq jq
+      - name: Validate every component manifest is parseable JSON (after stripping comments)
         run: |
-          find . -type f -name '*.sh' -print0 | sort -z | xargs -0 shellcheck -S error
+          set -e
+          for m in scripts/components/*/manifest.jsonc; do
+            echo "checking ${m}"
+            sed 's://.*$::g' "${m}" | jq -e .name >/dev/null
+            sed 's://.*$::g' "${m}" | jq -e .presets >/dev/null
+          done
 
-      - name: Validate JSON
-        run: |
-          find specs mcp-servers -type f -name '*.json' -print0 | sort -z | xargs -0 -n1 jq empty
+  integration-component:
+    name: Integration (per-component)
+    needs: [shellcheck, unit-tests, manifest-schema]
+    runs-on: [self-hosted, soc-stack]
+    concurrency:
+      group: soc-stack-integration
+      cancel-in-progress: false
+    # PR matrix covers the 3 fast components (~5-10min each on the test host).
+    # The 3 Docker-Compose-heavy components (thehive-cortex, misp, dashboards)
+    # are exercised by integration-full on merge to main, since each takes
+    # 15-30min on a constrained host and would stretch PR cycles past an hour.
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        component:
+          - wazuh
+          - zeek-suricata
+          - mcp
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy + assert ${{ matrix.component }}
+        run: bash tests/integration/ci-helpers/boot-test-env.sh "${{ matrix.component }}"
+      - name: Tear down
+        if: always()
+        run: bash tests/integration/ci-helpers/teardown-test-env.sh "${{ matrix.component }}"
+
+  integration-full:
+    name: Integration (full stack)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: integration-component
+    runs-on: [self-hosted, soc-stack]
+    concurrency:
+      group: soc-stack-integration
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy full stack + 5 cross-component integrations
+        run: bash tests/integration/ci-helpers/boot-test-env.sh all
+      - name: Tear down
+        if: always()
+        run: bash tests/integration/ci-helpers/teardown-test-env.sh --all

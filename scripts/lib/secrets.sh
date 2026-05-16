@@ -8,10 +8,15 @@
 # gen_password [length]
 # Emits an alnum + safe-special password of given length (default 24).
 # Safe chars only - no shell metacharacters that would need quoting.
+#
+# Implementation note: head closes its stdin after reading <len> bytes,
+# which causes tr to get SIGPIPE and write a "Broken pipe" error to stderr.
+# In some environments (CI in particular) that error stream interleaves with
+# the stdout capture. We discard tr's stderr to keep the output clean.
 gen_password() {
   local len="${1:-24}"
   local charset='A-Za-z0-9_+=.-'
-  LC_ALL=C tr -dc "${charset}" </dev/urandom | head -c "${len}"
+  LC_ALL=C tr -dc "${charset}" </dev/urandom 2>/dev/null | head -c "${len}"
 }
 
 # store_secret <name> <value>

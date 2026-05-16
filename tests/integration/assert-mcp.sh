@@ -42,17 +42,30 @@ empty_entries="$(jq -r '
 log "all 9 mcp_endpoints have non-empty url and token"
 
 # Check 3: each port 3001-3009 responds
-overall_ok=1
-for port in 3001 3002 3003 3004 3005 3006 3007 3008 3009; do
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "http://${host_ip}:${port}/sse")"
-  if (( code >= 200 && code < 500 )); then
-    log "port ${port}/sse -> HTTP ${code}"
-  else
-    log "FAIL: port ${port}/sse -> HTTP ${code}" >&2
-    overall_ok=0
+# Give mcp-proxy up to 60s to bind all 9 ports (it takes 5-15s per server
+# on first start; on a fresh deploy the assertion can run before they're ready)
+log "waiting up to 60s for MCP SSE ports to come online"
+all_up_after=""
+for grace in 0 5 10 15 20 30 45 60; do
+  all_up=1
+  for port in 3001 3002 3003 3004 3005 3006 3007 3008 3009; do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://${host_ip}:${port}/sse" 2>/dev/null || echo 000)"
+    if [[ "${code}" == "000" ]] || (( code >= 500 )); then
+      all_up=0
+      break
+    fi
+  done
+  if [[ "${all_up}" -eq 1 ]]; then
+    all_up_after="${grace}"
+    break
   fi
+  sleep $(( grace == 0 ? 5 : 5 ))
 done
 
-[[ "${overall_ok}" -eq 1 ]] || fail "one or more MCP SSE endpoints returned 5xx or timed out"
+if [[ -n "${all_up_after}" ]]; then
+  log "all 9 MCP SSE ports responding after ${all_up_after}s grace"
+else
+  fail "not all 9 MCP SSE ports responded within 60s grace"
+fi
 
 log "PASS"
