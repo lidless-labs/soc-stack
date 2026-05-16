@@ -1,0 +1,18 @@
+{
+  "name": "zeek-suricata",
+  "display_name": "Zeek + Suricata",
+  "description": "Network Security Monitoring (Zeek) + IDS/IPS (Suricata), single LXC, native install",
+  "depends_on": [],
+  "provides": ["zeek_log_dir", "suricata_eve_path"],
+  "presets": {
+    "minimal":    { "ram_mb": 2048, "disk_gb": 20, "cores": 1 },
+    "standard":   { "ram_mb": 4096, "disk_gb": 40, "cores": 2 },
+    "production": { "ram_mb": 8192, "disk_gb": 80, "cores": 4 }
+  },
+  "ports": [47760],
+  "template_pattern": "ubuntu-22.04-standard",
+  "features": ["nesting=1"],
+  "unprivileged": true,
+  "install_method": "native",
+  "default_creds": null
+}

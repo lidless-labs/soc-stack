@@ -1,0 +1,18 @@
+{
+  "name": "dashboards",
+  "display_name": "Dashboards",
+  "description": "Bro Hunter + Playbook Forge in a shared LXC with nginx reverse proxy",
+  "depends_on": [],
+  "provides": ["bro_hunter_url", "playbook_forge_url"],
+  "presets": {
+    "minimal":    { "ram_mb": 1024, "disk_gb": 10, "cores": 1 },
+    "standard":   { "ram_mb": 2048, "disk_gb": 15, "cores": 2 },
+    "production": { "ram_mb": 4096, "disk_gb": 20, "cores": 2 }
+  },
+  "ports": [80, 5174, 5177],
+  "template_pattern": "ubuntu-22.04-standard",
+  "features": ["nesting=1"],
+  "unprivileged": true,
+  "install_method": "native",
+  "default_creds": null
+}
