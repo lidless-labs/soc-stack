@@ -183,21 +183,29 @@ fi
 # MISP advanced authkeys are enabled by default; the REST endpoint approach is
 # unreliable at first boot. The cake CLI is the authoritative method.
 # (docs/gotchas.md: Advanced Authkeys section)
-log "generating API key via cake CLI"
+log "generating API key via cake CLI (retries up to 180s for DB init)"
 MISP_API_KEY=""
-MISP_API_KEY="$(docker compose -f "${STACK_DIR}/docker-compose.yml" exec -T misp-core bash -c \
-  "/var/www/MISP/app/Console/cake user change_authkey ${MISP_ADMIN_EMAIL}" 2>/dev/null \
-  | grep -oP '[a-zA-Z0-9]{40}' | head -1 || true)"
+cake_elapsed=0
+while [[ -z "${MISP_API_KEY}" ]] && (( cake_elapsed < 180 )); do
+  MISP_API_KEY="$(docker compose -f "${STACK_DIR}/docker-compose.yml" exec -T misp-core bash -c \
+    "/var/www/MISP/app/Console/cake user change_authkey ${MISP_ADMIN_EMAIL}" 2>/dev/null \
+    | grep -oP '[a-zA-Z0-9]{40}' | head -1 || true)"
+  if [[ -z "${MISP_API_KEY}" ]]; then
+    log "  cake CLI not ready yet (${cake_elapsed}s), retrying in 15s"
+    sleep 15
+    cake_elapsed=$((cake_elapsed + 15))
+  fi
+done
 
 if [[ -z "${MISP_API_KEY}" ]]; then
-  write_failed "could not generate API key via cake CLI"
+  write_failed "could not generate API key via cake CLI after ${cake_elapsed}s"
 fi
 log "API key obtained (${#MISP_API_KEY} chars)"
 
 # --- Admin password rotation ---
 # Use printf | curl to avoid bash history expansion on special chars.
 # POST /users/edit/1 with JSON body, Authorization: <api_key> header.
-MISP_ADMIN_PASS="$(LC_ALL=C tr -dc 'A-Za-z0-9_+=.-' </dev/urandom | head -c 24)"
+MISP_ADMIN_PASS="$(openssl rand -hex 12)"
 log "rotating admin password"
 printf '{"password":"%s","confirm_password":"%s"}' \
   "${MISP_ADMIN_PASS}" "${MISP_ADMIN_PASS}" \
