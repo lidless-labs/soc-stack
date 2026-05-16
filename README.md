@@ -32,11 +32,19 @@ Both paths use Docker Compose stacks with automated setup scripts that handle ac
 
 A unified one-shot Proxmox installer is in active development. Plan 1 ships the foundation (shared lib, per-component contract, Wazuh deployment, JSON output). The legacy paths (Hyper-V scripts, per-tool LXC one-liners) still work and remain in the repo until the migration completes in subsequent plans.
 
-**Plan 1 (this release):** Wazuh deployment via `scripts/install.sh --components wazuh --preset minimal --json-out /root/soc-stack.json`. State at `/var/lib/soc-stack/`. See [the design spec](docs/superpowers/specs/2026-05-15-soc-stack-unification-design.md).
+**Plan 1:** Wazuh deployment via `scripts/install.sh --components wazuh --preset minimal --json-out /root/soc-stack.json`. State at `/var/lib/soc-stack/`. See [the design spec](docs/superpowers/specs/2026-05-15-soc-stack-unification-design.md).
 
-**Plan 2 (next):** TheHive+Cortex, MISP, Zeek+Suricata, Dashboards, MCP servers.
+**Plan 2 (v0.9.0-rc1):** TheHive+Cortex, MISP, Zeek+Suricata, Dashboards, MCP proxy bridge. Four of six components verified on Proxmox VE. See known issues below.
 
 **Plan 3 (after):** Automated CI on Proxmox, README rewrite, deletion of legacy paths, v1.0.0 release.
+
+## Known Issues in v0.9.0-rc1
+
+These were observed during the full-stack smoke test on Proxmox VE (2026-05-16):
+
+- **zeek-suricata: LXC network timeout** - LXC 9001 failed the 180-second network-ready wait during DHCP assignment. The deploy script exits before zeek-suricata/deploy.sh runs. Workaround: re-run install with only `--components zeek-suricata` after network stabilises, or increase the wait timeout in `scripts/lib/network.sh`.
+- **mcp: SSE ports not accepting connections** - The MCP component deploys and result JSON contains all 9 endpoint URLs and tokens, but curl probes to ports 3001-3009 on the LXC IP return connection-refused. The mcp-proxy process likely starts after the assert probe window. Workaround: wait 30-60 seconds after install completes before probing SSE endpoints.
+- **Cross-component integrations require all components deployed** - The Wazuh-TheHive webhook, MISP-Suricata rule feed, and Zeek-Wazuh agent wires only configure when both sides are present. A partial deployment (zeek-suricata missing) blocks 4 of 5 integration checks.
 
 ---
 
