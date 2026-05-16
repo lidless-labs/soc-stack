@@ -128,9 +128,8 @@ services:
     ports: ["9000:9000"]
     environment:
       - JVM_OPTS=-Xms1024M -Xmx1024M
-      - PLAY_HTTP_SECRET=${THEHIVE_SECRET}
+      - TH_SECRET=${THEHIVE_SECRET}
     command:
-      - --no-config-secret
       - --cql-hostnames
       - cassandra
       - --index-backend
