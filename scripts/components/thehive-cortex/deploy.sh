@@ -215,15 +215,22 @@ CORTEX_PW_HASH="$(printf '%s%s' "${CORTEX_PW_SALT}" "${CORTEX_ADMIN_PASS}" | sha
 CORTEX_PW_STORED="${CORTEX_PW_SALT},${CORTEX_PW_HASH}"
 
 # Wait until the cortex_6 ES index exists (auto-init runs shortly after HTTP ready)
+# Auto-init can take up to 3 minutes; poll every 5s for up to 180s.
+log "waiting for Cortex auto-init to populate cortex_6/admin in Elasticsearch (up to 180s)"
 es_patch_ok=0
-for _i in $(seq 1 12); do
+es_elapsed=0
+while (( es_elapsed < 180 )); do
   if docker compose -f "${STACK_DIR}/docker-compose.yml" exec -T elasticsearch \
        curl -sf "http://localhost:9200/cortex_6/_doc/admin?routing=admin" >/dev/null 2>&1; then
-    es_patch_ok=1; break
+    es_patch_ok=1
+    log "cortex_6/admin appeared after ${es_elapsed}s"
+    break
   fi
   sleep 5
+  es_elapsed=$((es_elapsed + 5))
+  (( es_elapsed % 30 == 0 )) && log "  ... cortex_6/admin not yet, ${es_elapsed}s elapsed"
 done
-(( es_patch_ok )) || write_failed "cortex_6/admin ES doc did not appear within 60s"
+(( es_patch_ok )) || write_failed "cortex_6/admin ES doc did not appear within 180s"
 
 docker compose -f "${STACK_DIR}/docker-compose.yml" exec -T elasticsearch \
   curl -sf -X POST \
