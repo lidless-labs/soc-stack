@@ -38,8 +38,10 @@ write_failed() {
 trap 'write_failed "deploy.sh aborted on line $LINENO"' ERR
 
 # --- Idempotency: already running and healthy? ---
-if docker compose -f "${STACK_DIR}/docker-compose.yml" ps 2>/dev/null | grep -q "thehive.*running" \
-   && docker compose -f "${STACK_DIR}/docker-compose.yml" ps 2>/dev/null | grep -q "cortex.*running"; then
+services_running="$(docker compose -f "${STACK_DIR}/docker-compose.yml" ps \
+                     --filter "status=running" --services 2>/dev/null || true)"
+if grep -qx "thehive" <<< "${services_running}" \
+   && grep -qx "cortex" <<< "${services_running}"; then
   log "stack already running, refreshing state"
   IP="$(hostname -I | awk '{print $1}')"
 
