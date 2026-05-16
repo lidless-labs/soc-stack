@@ -193,16 +193,8 @@ if (( cassandra_ok != 1 )); then
   write_failed "Cassandra did not accept CQL within 600s"
 fi
 
-# Give Cassandra a moment after accepting connections to finish keyspace creation
-sleep 15
-
-# Restart TheHive now that Cassandra is ready, so it gets a clean boot
-log "restarting TheHive after Cassandra ready"
-docker compose -f "${STACK_DIR}/docker-compose.yml" restart thehive
-sleep 5
-
-log "waiting for TheHive on :9000 (up to 900s)"
-wait_http "http://localhost:9000/api/status" 900 "TheHive" || write_failed "TheHive did not become ready within 900s"
+log "waiting for TheHive on :9000 (up to 1200s)"
+wait_http "http://localhost:9000/api/status" 1200 "TheHive" || write_failed "TheHive did not become ready within 1200s"
 log "waiting for Cortex on :9001 (up to 900s)"
 wait_http "http://localhost:9001/api/status" 900 "Cortex" || write_failed "Cortex did not become ready within 900s"
 
