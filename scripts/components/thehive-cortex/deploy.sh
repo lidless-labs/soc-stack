@@ -180,7 +180,7 @@ while (( elapsed < 600 )); do
   # Use a bare TCP probe via bash /dev/tcp to avoid JVM_OPTS env contamination
   # of nodetool (cassandra's JVM_OPTS heap settings break nodetool's own JVM startup).
   if timeout 3 bash -c 'cat < /dev/tcp/cassandra/9042' >/dev/null 2>&1 \
-     || docker compose -f "${STACK_DIR}/docker-compose.yml" exec -T cassandra bash -c 'cat < /dev/tcp/127.0.0.1/9042' >/dev/null 2>&1; then
+     || timeout 5 docker compose -f "${STACK_DIR}/docker-compose.yml" exec -T cassandra bash -c 'cat < /dev/tcp/127.0.0.1/9042' >/dev/null 2>&1; then
     cassandra_ok=1
     log "Cassandra accepting CQL on :9042 after ${elapsed}s"
     break
