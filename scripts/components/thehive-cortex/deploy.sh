@@ -172,10 +172,10 @@ wait_http() {
   return 1
 }
 
-log "waiting for Cassandra to accept CQL connections on :9042 (up to 600s)"
+log "waiting for Cassandra to accept CQL connections on :9042 (up to 900s)"
 cassandra_ok=0
 elapsed=0
-while (( elapsed < 600 )); do
+while (( elapsed < 900 )); do
   # Use a bare TCP probe via bash /dev/tcp to avoid JVM_OPTS env contamination
   # of nodetool (cassandra's JVM_OPTS heap settings break nodetool's own JVM startup).
   if timeout 3 bash -c 'cat < /dev/tcp/cassandra/9042' >/dev/null 2>&1 \
@@ -190,7 +190,7 @@ while (( elapsed < 600 )); do
 done
 
 if (( cassandra_ok != 1 )); then
-  write_failed "Cassandra did not accept CQL within 600s"
+  write_failed "Cassandra did not accept CQL within 900s"
 fi
 
 log "waiting for TheHive on :9000 (up to 1200s)"
