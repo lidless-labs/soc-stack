@@ -222,15 +222,6 @@ done
 
 See [docs/adding-a-stack.md](docs/adding-a-stack.md) for the component contract walk-through, and [docs/superpowers/specs/2026-05-15-soc-stack-unification-design.md](docs/superpowers/specs/2026-05-15-soc-stack-unification-design.md) for the full design.
 
-## Legacy paths
-
-The repo still contains the pre-v0.5.0 deployment paths:
-
-- `proxmox/ct/*.sh` - per-tool one-liner LXC scripts (community-scripts.org style) for thehive-cortex and misp only
-- `scripts/create-vm.ps1`, `cloud-init/`, `reference/hyper-v/` - the Hyper-V VM automation path
-
-These paths still work, but the unified `install.sh` is the canonical entrypoint going forward. The legacy paths will be removed in v1.0.0.
-
 ## License
 
 MIT
