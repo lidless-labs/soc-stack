@@ -38,8 +38,9 @@ rsync -a --delete \
 # Wipe any stale state from prior CI runs - matrix jobs share /tmp/soc-stack-test/
 # and a left-behind state file would cause install.sh's idempotency check to skip
 # the actual deploy and falsely claim success.
+# (gh-runner sudoers allows bash, not rm directly, so wrap in sudo bash -c.)
 # shellcheck disable=SC2029
-ssh "${PROXMOX_HOST}" "sudo rm -f /tmp/soc-stack-test/state/${TARGET}.json /tmp/soc-stack-test/vmid-${TARGET}.txt"
+ssh "${PROXMOX_HOST}" "sudo bash -c 'rm -f /tmp/soc-stack-test/state/${TARGET}.json /tmp/soc-stack-test/vmid-${TARGET}.txt'"
 
 # Set up test env (allocates VMID)
 # shellcheck disable=SC2029
