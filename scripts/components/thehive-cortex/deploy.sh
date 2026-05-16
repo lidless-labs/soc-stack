@@ -173,10 +173,10 @@ wait_http() {
   return 1
 }
 
-log "waiting for TheHive on :9000 (up to 600s)"
-wait_http "http://localhost:9000/api/status" 600 "TheHive" || write_failed "TheHive did not become ready within 600s"
-log "waiting for Cortex on :9001 (up to 600s)"
-wait_http "http://localhost:9001/api/status" 600 "Cortex" || write_failed "Cortex did not become ready within 600s"
+log "waiting for TheHive on :9000 (up to 900s)"
+wait_http "http://localhost:9000/api/status" 900 "TheHive" || write_failed "TheHive did not become ready within 900s"
+log "waiting for Cortex on :9001 (up to 900s)"
+wait_http "http://localhost:9001/api/status" 900 "Cortex" || write_failed "Cortex did not become ready within 900s"
 
 # --- Cortex first-run wizard ---
 log "running Cortex first-run wizard"
@@ -188,7 +188,7 @@ CSRF="$(awk '/X-XSRF-TOKEN/ || /XSRF-TOKEN/ {print $7}' "${CJAR}" | head -1)"
 curl -sf -b "${CJAR}" -c "${CJAR}" -H "X-XSRF-TOKEN: ${CSRF}" \
   -X POST "http://localhost:9001/api/maintenance/migrate" -d '{}' >/dev/null || true
 
-CORTEX_ADMIN_PASS="$(LC_ALL=C tr -dc 'A-Za-z0-9_+=.-' </dev/urandom | head -c 24)"
+CORTEX_ADMIN_PASS="$(openssl rand -hex 12)"
 curl -sf -b "${CJAR}" -c "${CJAR}" -H "X-XSRF-TOKEN: ${CSRF}" \
   -H "Content-Type: application/json" \
   -X POST "http://localhost:9001/api/user" \
@@ -218,7 +218,7 @@ CORTEX_API_KEY="$(curl -sf -b "${CJAR}" -H "X-XSRF-TOKEN: ${CSRF}" \
 # --- TheHive admin password rotation + API key ---
 log "rotating TheHive admin password + minting API key"
 THEHIVE_DEFAULT_PASS="secret"
-THEHIVE_ADMIN_PASS="$(LC_ALL=C tr -dc 'A-Za-z0-9_+=.-' </dev/urandom | head -c 24)"
+THEHIVE_ADMIN_PASS="$(openssl rand -hex 12)"
 
 # Login with default
 TCJAR="$(mktemp)"
