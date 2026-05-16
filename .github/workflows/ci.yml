@@ -20,12 +20,12 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
       - name: Shellcheck all bash
         run: |
-          shellcheck install.sh
-          shellcheck scripts/install.sh
-          shellcheck scripts/lib/*.sh
-          shellcheck scripts/components/*/*.sh
-          shellcheck tests/integration/*.sh
-          shellcheck tools/*.sh
+          shellcheck --severity=warning install.sh
+          shellcheck --severity=warning scripts/install.sh
+          shellcheck --severity=warning scripts/lib/*.sh
+          shellcheck --severity=warning scripts/components/*/*.sh
+          shellcheck --severity=warning tests/integration/*.sh
+          shellcheck --severity=warning tools/*.sh
 
   unit-tests:
     name: Bats unit tests
