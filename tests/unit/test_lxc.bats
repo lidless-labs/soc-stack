@@ -62,3 +62,20 @@ setup() {
   lxc_start 9001
   grep -q "pct start 9001" "${MOCK_PCT_CALLS_LOG}"
 }
+
+@test "lxc_wait_network returns success when pct exec ping succeeds on first attempt" {
+  MOCK_PCT_EXIT=0 run lxc_wait_network 9001 10
+  assert_success
+}
+
+@test "lxc_wait_network honors a custom timeout" {
+  # Force ping to always fail by making pct exec exit non-zero
+  export MOCK_PCT_EXIT=1
+  local start
+  start=$(date +%s)
+  run lxc_wait_network 9001 4
+  local elapsed=$(( $(date +%s) - start ))
+  [[ "$status" -ne 0 ]]
+  # Should have given up by ~4-6s, not waited the full default
+  (( elapsed <= 8 ))
+}
