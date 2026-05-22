@@ -25,3 +25,14 @@ IMPLEMENTATION_*.md
 .claude/
 .codex/
 .learnings/
+
+# Claude Code + research surface
+.claude/
+.codex/
+.learnings/
+docs/superpowers/
+**/memory-handoffs/
+
+# OpenClaw files
+.openclaw/
+*.sqlite
