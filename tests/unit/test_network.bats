@@ -42,12 +42,12 @@ setup() {
 }
 
 @test "allocate_ip with /24 returns sequential addresses" {
-  run allocate_ip "192.0.2.10/24" 0
-  assert_output "192.0.2.10/24"
-  run allocate_ip "192.0.2.10/24" 1
-  assert_output "192.0.2.11/24"
-  run allocate_ip "192.0.2.10/24" 5
-  assert_output "192.0.2.15/24"
+  run allocate_ip "198.51.100.10/24" 0
+  assert_output "198.51.100.10/24"
+  run allocate_ip "198.51.100.10/24" 1
+  assert_output "198.51.100.11/24"
+  run allocate_ip "198.51.100.10/24" 5
+  assert_output "198.51.100.15/24"
 }
 
 @test "validate_bridge accepts existing bridge" {

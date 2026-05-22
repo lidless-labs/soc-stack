@@ -1,3 +1,4 @@
+<!-- content-guard: allow email file -->
 # Phishing Email Triage
 
 **Title:** Phishing Email Investigation and Response

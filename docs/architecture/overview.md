@@ -232,7 +232,7 @@ For smaller deployments, TheHive and MISP can share a single VM. The MCP gateway
             ▼                     │
 ┌────────────────────┐            │
 │ Sensor VLAN        │            │
-│ (203.0.113.0/24)      │            │
+│ (198.51.100.0/24)      │            │
 │                     │            │
 │ sensor-01  .10      │            │
 │ (Zeek + Suricata)   │            │

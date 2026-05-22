@@ -24,7 +24,7 @@ next_vmid() {
 }
 
 # allocate_ip <base_cidr> <index>
-# Given base "192.0.2.10/24" and index 3, returns "192.0.2.13/24".
+# Given base "198.51.100.10/24" and index 3, returns "198.51.100.13/24".
 allocate_ip() {
   local base_cidr="$1"
   local index="$2"

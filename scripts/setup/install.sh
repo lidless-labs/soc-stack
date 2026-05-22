@@ -288,7 +288,7 @@ select_network() {
 
   if [[ "$IP_MODE" == "static" ]]; then
     IP_RANGE=$(whiptail --title "S³ Stack: Static IP Range" \
-      --inputbox "Enter starting IP (CIDR notation, e.g. 192.0.2.10/24):" 10 64 "192.0.2.10/24" \
+      --inputbox "Enter starting IP (CIDR notation, e.g. 198.51.100.10/24):" 10 64 "198.51.100.10/24" \
       3>&1 1>&2 2>&3) || { msg_error "Cancelled"; exit 1; }
   fi
 }

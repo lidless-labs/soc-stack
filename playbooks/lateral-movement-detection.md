@@ -99,7 +99,7 @@ zeek-mcp.investigate_host("198.51.100.50")
 # Focus on internal connections (filter out internet traffic)
 zeek-mcp.query_connections({
   src_ip: "198.51.100.50",
-  dst_subnet: "10.0.0.0/8",
+  dst_subnet: "198.51.100.0/8",
   timeframe: "48h"
 })
 
@@ -164,7 +164,7 @@ zeek-mcp.query_connections({
 # Check for external connections (exfiltration)
 zeek-mcp.query_connections({
   src_ip: "198.51.100.50",
-  dst_subnet: "!10.0.0.0/8",  # Non-internal
+  dst_subnet: "!198.51.100.0/8",  # Non-internal
   timeframe: "48h"
 })
 

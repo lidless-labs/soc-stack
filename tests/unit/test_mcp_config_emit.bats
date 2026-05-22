@@ -23,17 +23,17 @@ setup() {
   "component": "mcp",
   "status": "deployed",
   "mcp_endpoints": [
-    {"name": "wazuh", "url": "http://192.0.2.99:3001/sse", "token": "abc123"},
-    {"name": "thehive", "url": "http://192.0.2.99:3002/sse", "token": "def456"}
+    {"name": "wazuh", "url": "http://198.51.100.99:3001/sse", "token": "abc123"},
+    {"name": "thehive", "url": "http://198.51.100.99:3002/sse", "token": "def456"}
   ]
 }
 EOF
   local out="${BATS_TEST_TMPDIR}/mcp.json"
   emit_mcp_config "${out}"
   jq -e '.mcpServers.wazuh.type == "sse"' "${out}"
-  jq -e '.mcpServers.wazuh.url == "http://192.0.2.99:3001/sse"' "${out}"
+  jq -e '.mcpServers.wazuh.url == "http://198.51.100.99:3001/sse"' "${out}"
   jq -e '.mcpServers.wazuh.headers.Authorization == "Bearer abc123"' "${out}"
-  jq -e '.mcpServers.thehive.url == "http://192.0.2.99:3002/sse"' "${out}"
+  jq -e '.mcpServers.thehive.url == "http://198.51.100.99:3002/sse"' "${out}"
   jq -e '.raw_endpoints | length == 2' "${out}"
   jq -e '.comment' "${out}" >/dev/null
 }
@@ -41,7 +41,7 @@ EOF
 @test "emit_mcp_config preserves all 9 servers if present" {
   local servers='[]'
   for n in wazuh thehive cortex misp zeek suricata mitre rapid7 sophos; do
-    servers="$(jq --arg n "$n" --arg url "http://192.0.2.99:3001/sse" --arg tok "tok-$n" \
+    servers="$(jq --arg n "$n" --arg url "http://198.51.100.99:3001/sse" --arg tok "tok-$n" \
       '. + [{name:$n,url:$url,token:$tok}]' <<< "${servers}")"
   done
   jq -n --argjson eps "${servers}" '{

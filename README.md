@@ -103,7 +103,7 @@ Designed so an AI agent can SSH into a Proxmox host and one-shot a SOC. The full
 --bridge NAME         Proxmox bridge (default: vmbr0)
 --storage NAME        Storage pool (default: auto-detect)
 --ip-mode MODE        dhcp or static (default: dhcp)
---ip-range CIDR       Required if --ip-mode=static (e.g., 192.0.2.10/24)
+--ip-range CIDR       Required if --ip-mode=static (e.g., 198.51.100.10/24)
 --vlan TAG            Optional VLAN tag
 --vmid-start N        First VMID to allocate (default: next free)
 --manifest PATH       JSON manifest (alternative to flags)

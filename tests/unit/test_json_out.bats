@@ -18,8 +18,8 @@ setup() {
 
 @test "state_set updates existing field without losing others" {
   state_set wazuh status "deployed"
-  state_set wazuh url "https://192.0.2.10"
-  jq -e '.status == "deployed" and .url == "https://192.0.2.10"' "${SOC_STATE_DIR}/state/wazuh.json"
+  state_set wazuh url "https://198.51.100.10"
+  jq -e '.status == "deployed" and .url == "https://198.51.100.10"' "${SOC_STATE_DIR}/state/wazuh.json"
 }
 
 @test "state_set handles nested keys via dot notation" {
@@ -49,7 +49,7 @@ setup() {
 
 @test "emit_final_json writes valid JSON with all component states" {
   state_set wazuh status "deployed"
-  state_set wazuh url "https://192.0.2.10"
+  state_set wazuh url "https://198.51.100.10"
   state_set misp  status "failed"
   state_set misp  error "compose pull timeout"
 
