@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# scripts/install.sh - SOC Stack unified Proxmox installer (Plan 1 - wazuh only)
+# scripts/install.sh - SOC Stack unified Proxmox installer
 # Spec: docs/superpowers/specs/2026-05-15-soc-stack-unification-design.md
 
 set -euo pipefail
 
-SOC_STACK_VERSION="0.5.0"
+SOC_STACK_VERSION="1.0.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC2034
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -15,6 +15,7 @@ COMPONENTS_DIR="${SCRIPT_DIR}/components"
 # Defaults (used by parse_args, build_manifest, deploy_one, main)
 # shellcheck disable=SC2034
 OPT_COMPONENTS="all"
+OPT_COMPONENTS_SET="0"
 # shellcheck disable=SC2034
 OPT_PRESET="standard"
 # shellcheck disable=SC2034
@@ -45,8 +46,11 @@ OPT_FORCE="0"
 # shellcheck disable=SC2034
 OPT_NO_INTEGRATE="0"
 OPT_NON_INTERACTIVE=""
+OPT_INCLUDE_SECRETS_JSON="0"
+OPT_MCP_BIND_HOST="127.0.0.1"
 # shellcheck disable=SC2034
 OPT_EARLY_EXIT=0
+SOC_WARNINGS=()
 
 usage() {
   cat <<EOF
@@ -73,31 +77,48 @@ Flags:
   --force               Redeploy even if state shows complete
   --no-integrate        Skip cross-component wiring
   --non-interactive     Hard-fail on prompts (auto when stdin not a tty)
+  --include-secrets-json
+                         Include raw credentials in result JSON (default: redacted)
+  --mcp-bind-host HOST   MCP SSE bind host (default: 127.0.0.1; use 0.0.0.0 to expose)
   --version             Print version and exit
 EOF
 }
 
 # shellcheck disable=SC2034
 parse_args() {
+  local flag
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --components)        OPT_COMPONENTS="$2"; shift 2 ;;
-      --preset)            OPT_PRESET="$2"; shift 2 ;;
-      --bridge)            OPT_BRIDGE="$2"; shift 2 ;;
-      --storage)           OPT_STORAGE="$2"; shift 2 ;;
-      --ip-mode)           OPT_IP_MODE="$2"; shift 2 ;;
-      --ip-range)          OPT_IP_RANGE="$2"; shift 2 ;;
-      --vlan)              OPT_VLAN="$2"; shift 2 ;;
-      --vmid-start)        OPT_VMID_START="$2"; shift 2 ;;
-      --manifest)          OPT_MANIFEST="$2"; shift 2 ;;
-      --state-dir)         OPT_STATE_DIR="$2"; shift 2 ;;
-      --json-out)          OPT_JSON_OUT="$2"; shift 2 ;;
-      --mcp-config-out)    OPT_MCP_CONFIG_OUT="$2"; shift 2 ;;
-      --log-file)          OPT_LOG_FILE="$2"; shift 2 ;;
+      --components|--preset|--bridge|--storage|--ip-mode|--ip-range|--vlan|--vmid-start|--manifest|--state-dir|--json-out|--mcp-config-out|--log-file|--mcp-bind-host)
+        flag="$1"
+        if [[ $# -lt 2 || "$2" == --* ]]; then
+          printf 'missing value for %s\n' "${flag}" >&2
+          usage >&2
+          return 1
+        fi
+        case "${flag}" in
+          --components)     OPT_COMPONENTS="$2"; OPT_COMPONENTS_SET="1" ;;
+          --preset)         OPT_PRESET="$2" ;;
+          --bridge)         OPT_BRIDGE="$2" ;;
+          --storage)        OPT_STORAGE="$2" ;;
+          --ip-mode)        OPT_IP_MODE="$2" ;;
+          --ip-range)       OPT_IP_RANGE="$2" ;;
+          --vlan)           OPT_VLAN="$2" ;;
+          --vmid-start)     OPT_VMID_START="$2" ;;
+          --manifest)       OPT_MANIFEST="$2" ;;
+          --state-dir)      OPT_STATE_DIR="$2" ;;
+          --json-out)       OPT_JSON_OUT="$2" ;;
+          --mcp-config-out) OPT_MCP_CONFIG_OUT="$2" ;;
+          --log-file)       OPT_LOG_FILE="$2" ;;
+          --mcp-bind-host)  OPT_MCP_BIND_HOST="$2" ;;
+        esac
+        shift 2
+        ;;
       --dry-run)           OPT_DRY_RUN="1"; shift ;;
       --force)             OPT_FORCE="1"; shift ;;
       --no-integrate)      OPT_NO_INTEGRATE="1"; shift ;;
       --non-interactive)   OPT_NON_INTERACTIVE="1"; shift ;;
+      --include-secrets-json) OPT_INCLUDE_SECRETS_JSON="1"; shift ;;
       --version)           printf 'soc-stack v%s\n' "${SOC_STACK_VERSION}"; OPT_EARLY_EXIT=1; return 0 ;;
       --help|-h)           usage; OPT_EARLY_EXIT=1; return 0 ;;
       *) printf 'unknown flag: %s\n' "$1" >&2; usage >&2; return 1 ;;
@@ -110,11 +131,120 @@ parse_args() {
   fi
 }
 
+validation_error() {
+  printf '%s\n' "$*" >&2
+}
+
+validate_options() {
+  case "${OPT_PRESET}" in
+    minimal|standard|production) ;;
+    *) validation_error "invalid preset: ${OPT_PRESET}"; return 1 ;;
+  esac
+
+  case "${OPT_IP_MODE}" in
+    dhcp|static) ;;
+    *) validation_error "invalid ip mode: ${OPT_IP_MODE}"; return 1 ;;
+  esac
+
+  if [[ "${OPT_IP_MODE}" == "static" ]]; then
+    if [[ -z "${OPT_IP_RANGE}" ]]; then
+      validation_error "--ip-range is required when --ip-mode=static"
+      return 1
+    fi
+    if [[ ! "${OPT_IP_RANGE}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]; then
+      validation_error "invalid ip range: ${OPT_IP_RANGE}"
+      return 1
+    fi
+  fi
+
+  if [[ ! "${OPT_VMID_START}" =~ ^[0-9]+$ ]]; then
+    validation_error "invalid vmid start: ${OPT_VMID_START}"
+    return 1
+  fi
+
+  if [[ -n "${OPT_VLAN}" ]]; then
+    if [[ ! "${OPT_VLAN}" =~ ^[0-9]+$ ]] || (( OPT_VLAN < 1 || OPT_VLAN > 4094 )); then
+      validation_error "invalid vlan tag: ${OPT_VLAN}"
+      return 1
+    fi
+  fi
+
+  if [[ -z "${OPT_MCP_BIND_HOST}" || ! "${OPT_MCP_BIND_HOST}" =~ ^[A-Za-z0-9_.:-]+$ ]]; then
+    validation_error "invalid mcp bind host: ${OPT_MCP_BIND_HOST}"
+    return 1
+  fi
+}
+
+is_interactive_stdin() {
+  [[ -t 0 || "${SOC_TEST_FORCE_TTY:-0}" == "1" ]]
+}
+
+maybe_pick_components() {
+  if [[ "${OPT_NON_INTERACTIVE}" == "1" || "${OPT_COMPONENTS_SET}" == "1" || -n "${OPT_MANIFEST}" ]]; then
+    return 0
+  fi
+  is_interactive_stdin || return 0
+
+  local selected=()
+  local i
+  for i in "${!COMPONENTS_KNOWN[@]}"; do
+    selected[i]=1
+  done
+
+  while true; do
+    printf '\nSelect SOC Stack components. Press Enter to continue.\n' >&2
+    for i in "${!COMPONENTS_KNOWN[@]}"; do
+      local mark=" "
+      [[ "${selected[i]}" == "1" ]] && mark="x"
+      printf '  %d) [%s] %s\n' "$((i + 1))" "${mark}" "${COMPONENTS_KNOWN[i]}" >&2
+    done
+    printf 'Toggle number, a=all, n=none, Enter=continue: ' >&2
+
+    local choice
+    IFS= read -r choice || return 0
+    case "${choice}" in
+      "")
+        local picked=()
+        for i in "${!COMPONENTS_KNOWN[@]}"; do
+          [[ "${selected[i]}" == "1" ]] && picked+=("${COMPONENTS_KNOWN[i]}")
+        done
+        if [[ ${#picked[@]} -eq 0 ]]; then
+          printf 'Select at least one component.\n' >&2
+          continue
+        fi
+        local csv
+        csv="$(IFS=,; printf '%s' "${picked[*]}")"
+        OPT_COMPONENTS="${csv}"
+        OPT_COMPONENTS_SET="1"
+        return 0
+        ;;
+      a|A)
+        for i in "${!COMPONENTS_KNOWN[@]}"; do selected[i]=1; done
+        ;;
+      n|N)
+        for i in "${!COMPONENTS_KNOWN[@]}"; do selected[i]=0; done
+        ;;
+      [1-9]*)
+        if [[ "${choice}" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#COMPONENTS_KNOWN[@]} )); then
+          i=$((choice - 1))
+          [[ "${selected[i]}" == "1" ]] && selected[i]=0 || selected[i]=1
+        else
+          printf 'Invalid selection: %s\n' "${choice}" >&2
+        fi
+        ;;
+      *)
+        printf 'Invalid selection: %s\n' "${choice}" >&2
+        ;;
+    esac
+  done
+}
+
 # shellcheck disable=SC1091
 source_libs() {
   export SOC_LOG_FILE="${OPT_LOG_FILE}"
   export SOC_STATE_DIR="${OPT_STATE_DIR}"
   export SOC_SECRETS_DIR="${OPT_STATE_DIR}/secrets"
+  export SOC_STACK_VERSION
 
   source "${LIB_DIR}/logging.sh"
   source "${LIB_DIR}/secrets.sh"
@@ -137,11 +267,73 @@ expand_components() {
     printf '%s' "${COMPONENTS_KNOWN[*]}"
     return 0
   fi
+  input="$(tr -d '[:space:]' <<< "${input}")"
   local arr=()
   # IFS=, scoped only to the read command; restored to default (space)
   # before the final join via ${arr[*]}.
   IFS=',' read -r -a arr <<< "${input}"
   printf '%s' "${arr[*]}"
+}
+
+validate_components_json() {
+  local manifest="$1"
+  if ! jq -e '.components | type == "array" and length > 0' <<< "${manifest}" >/dev/null; then
+    printf 'manifest components must be a non-empty array\n' >&2
+    return 1
+  fi
+
+  local seen=" "
+  local c
+  while IFS= read -r c; do
+    [[ -n "${c}" ]] || { printf 'component name cannot be empty\n' >&2; return 1; }
+    if [[ "${seen}" == *" ${c} "* ]]; then
+      printf 'duplicate component: %s\n' "${c}" >&2
+      return 1
+    fi
+    seen+="${c} "
+    local known=0
+    local k
+    for k in "${COMPONENTS_KNOWN[@]}"; do
+      [[ "${k}" == "${c}" ]] && { known=1; break; }
+    done
+    if [[ "${known}" -ne 1 ]]; then
+      printf 'unknown component: %s\n' "${c}" >&2
+      return 1
+    fi
+  done < <(jq -r '.components[]' <<< "${manifest}")
+}
+
+validate_manifest_values() {
+  local manifest="$1"
+  local preset ip_mode vmid_start ip_range vlan
+  preset="$(jq -r '.preset // empty' <<< "${manifest}")"
+  ip_mode="$(jq -r '.network.ip_mode // empty' <<< "${manifest}")"
+  vmid_start="$(jq -r '.vmid_start // 0' <<< "${manifest}")"
+  ip_range="$(jq -r '.network.ip_range // empty' <<< "${manifest}")"
+  vlan="$(jq -r '.network.vlan // empty' <<< "${manifest}")"
+
+  case "${preset}" in
+    minimal|standard|production) ;;
+    *) printf 'invalid preset: %s\n' "${preset}" >&2; return 1 ;;
+  esac
+  case "${ip_mode}" in
+    dhcp|static) ;;
+    *) printf 'invalid ip mode: %s\n' "${ip_mode}" >&2; return 1 ;;
+  esac
+  if [[ "${ip_mode}" == "static" && -z "${ip_range}" ]]; then
+    printf 'manifest network.ip_range is required when network.ip_mode=static\n' >&2
+    return 1
+  fi
+  if [[ ! "${vmid_start}" =~ ^[0-9]+$ ]]; then
+    printf 'invalid vmid_start: %s\n' "${vmid_start}" >&2
+    return 1
+  fi
+  if [[ -n "${vlan}" ]]; then
+    if [[ ! "${vlan}" =~ ^[0-9]+$ ]] || (( vlan < 1 || vlan > 4094 )); then
+      printf 'invalid vlan tag: %s\n' "${vlan}" >&2
+      return 1
+    fi
+  fi
 }
 
 # build_manifest
@@ -193,8 +385,14 @@ build_manifest() {
     if [[ "${OPT_VMID_START}" != "0" ]]; then
       manifest="$(jq --argjson v "${OPT_VMID_START}" '.vmid_start = $v' <<< "${manifest}")"
     fi
+    manifest="$(jq \
+      --arg bridge "${OPT_BRIDGE}" \
+      '.network = (.network // {}) |
+       .network.bridge = (.network.bridge // $bridge) |
+       .network.ip_mode = (.network.ip_mode // "dhcp") |
+       .vmid_start = (.vmid_start // 0)' <<< "${manifest}")"
   else
-    # Flag-only mode (Plan 1 behavior)
+    # Flag-only mode
     local components_list
     components_list="$(expand_components "${OPT_COMPONENTS}")"
     local components_json
@@ -224,22 +422,67 @@ build_manifest() {
       }')"
   fi
 
-  # Validate every component is known
-  local c
-  while IFS= read -r c; do
-    [[ -n "${c}" ]] || continue
-    local known=0
-    local k
-    for k in "${COMPONENTS_KNOWN[@]}"; do
-      [[ "${k}" == "${c}" ]] && { known=1; break; }
-    done
-    if [[ "${known}" -ne 1 ]]; then
-      printf 'unknown component: %s\n' "${c}" >&2
-      return 1
-    fi
-  done < <(jq -r '.components[]' <<< "${manifest}")
+  validate_components_json "${manifest}" || return 1
+  validate_manifest_values "${manifest}" || return 1
 
   printf '%s\n' "${manifest}"
+}
+
+selection_has() {
+  local needle="$1"; shift
+  local item
+  for item in "$@"; do
+    [[ "${item}" == "${needle}" ]] && return 0
+  done
+  return 1
+}
+
+record_warning() {
+  local message="$*"
+  SOC_WARNINGS+=("${message}")
+  if declare -F msg_warn >/dev/null 2>&1; then
+    msg_warn "${message}"
+  else
+    printf 'WARN: %s\n' "${message}" >&2
+  fi
+}
+
+component_available_after_plan() {
+  local component="$1"; shift
+  selection_has "${component}" "$@" || is_completed "${component}"
+}
+
+plan_dependency_warnings() {
+  local selected=("$@")
+  if selection_has mcp "${selected[@]}"; then
+    local peer
+    for peer in wazuh thehive-cortex misp zeek-suricata; do
+      component_available_after_plan "${peer}" "${selected[@]}" || \
+        record_warning "mcp selected without ${peer}; related MCP environment will remain unwired until that component is deployed"
+    done
+  fi
+  if selection_has zeek-suricata "${selected[@]}"; then
+    component_available_after_plan wazuh "${selected[@]}" || \
+      record_warning "zeek-suricata selected without wazuh; Zeek logs will not forward to Wazuh until Wazuh is deployed"
+    component_available_after_plan misp "${selected[@]}" || \
+      record_warning "zeek-suricata selected without misp; Suricata will not consume MISP rules until MISP is deployed"
+  fi
+  if selection_has dashboards "${selected[@]}"; then
+    component_available_after_plan zeek-suricata "${selected[@]}" || \
+      record_warning "dashboards selected without zeek-suricata; Bro Hunter will start without live Zeek logs"
+  fi
+  if selection_has wazuh "${selected[@]}"; then
+    component_available_after_plan thehive-cortex "${selected[@]}" || \
+      record_warning "wazuh selected without thehive-cortex; Wazuh alerts will not forward to TheHive until TheHive is deployed"
+  fi
+}
+
+warnings_json() {
+  if [[ ${#SOC_WARNINGS[@]} -eq 0 ]]; then
+    printf '[]'
+  else
+    printf '%s\n' "${SOC_WARNINGS[@]}" | jq -R . | jq -s .
+  fi
 }
 
 # deploy_one <component> <manifest_json>
@@ -247,6 +490,7 @@ build_manifest() {
 deploy_one() {
   local component="$1"
   local manifest="$2"
+  local index="$3"
 
   msg_info "==== ${component} ===="
 
@@ -275,9 +519,8 @@ deploy_one() {
   case "${ip_mode}" in
     dhcp)   net_config+=",ip=dhcp" ;;
     static)
-      local ip_range index ip
+      local ip_range ip
       ip_range="$(jq -r '.network.ip_range' <<< "${manifest}")"
-      index=0  # Plan 1 single-component, index 0
       ip="$(allocate_ip "${ip_range}" "${index}")"
       net_config+=",ip=${ip}"
       ;;
@@ -303,11 +546,6 @@ deploy_one() {
                  SOC_STORAGE="${storage}" \
                  "${COMPONENTS_DIR}/${component}/lxc-spec.sh" )"
 
-  # Generate root password
-  local rootpw
-  rootpw="$(gen_password 24)"
-  store_secret "${component}-lxc-root" "${rootpw}"
-
   # Create LXC
   msg_info "creating LXC ${vmid} for ${component}"
   local pct_args=()
@@ -322,6 +560,11 @@ deploy_one() {
     msg_info "[dry-run] would: pct create ${vmid} ${template} --hostname s3-${component} ${pct_args[*]} --password ***"
     return 0
   fi
+
+  # Generate root password only when an LXC will actually be created.
+  local rootpw
+  rootpw="$(gen_password 24)"
+  store_secret "${component}-lxc-root" "${rootpw}"
 
   lxc_create "${vmid}" "s3-${component}" "${template}" "${pct_args[@]}" --password "${rootpw}"
   lxc_start "${vmid}"
@@ -341,6 +584,7 @@ deploy_one() {
       SOC_COMPONENT="${component}" \
       SOC_PRESET="${preset}" \
       SOC_NON_INTERACTIVE=1 \
+      SOC_MCP_BIND_HOST="${OPT_MCP_BIND_HOST}" \
       bash "${remote_deploy}"; then
     msg_error "${component} deploy.sh failed"
     state_set "${component}" status "failed"
@@ -418,8 +662,10 @@ integrate_all() {
 }
 
 main() {
-  parse_args "$@" || return $?
+  parse_args "$@" || return 2
   [[ "${OPT_EARLY_EXIT}" == "1" ]] && return 0
+  validate_options || return 2
+  maybe_pick_components || return 2
   source_libs
 
   msg_info "soc-stack v${SOC_STACK_VERSION} starting"
@@ -436,25 +682,30 @@ main() {
 
   # Build manifest
   local manifest
-  manifest="$(build_manifest)" || return 1
+  manifest="$(build_manifest)" || return 2
 
   if [[ "${OPT_DRY_RUN}" == "1" ]]; then
     msg_info "[dry-run] effective manifest:"
     jq <<< "${manifest}"
   fi
 
-  # Deploy each component in canonical order (Plan 1 effectively wazuh only)
+  # Deploy each requested component.
   local exit_status=0
   local components_arr=()
   while IFS= read -r line; do
     [[ -n "${line}" ]] && components_arr+=("${line}")
   done < <(jq -r '.components[]' <<< "${manifest}")
 
+  msg_info "deploy plan: ${components_arr[*]}"
+  plan_dependency_warnings "${components_arr[@]}"
+
   local component
+  local component_index=0
   for component in "${components_arr[@]}"; do
-    if ! deploy_one "${component}" "${manifest}"; then
+    if ! deploy_one "${component}" "${manifest}" "${component_index}"; then
       exit_status=3
     fi
+    component_index=$((component_index + 1))
   done
 
   # Only mark completed if verify passed (set inside deploy_one upon success
@@ -469,7 +720,8 @@ main() {
   integrate_all
 
   # Emit results
-  emit_final_json "${OPT_JSON_OUT}"
+  SOC_WARNINGS_JSON="$(warnings_json)" \
+    emit_final_json "${OPT_JSON_OUT}" "${OPT_INCLUDE_SECRETS_JSON}"
   msg_ok "result JSON written to ${OPT_JSON_OUT}"
 
   emit_mcp_config "${OPT_MCP_CONFIG_OUT}"

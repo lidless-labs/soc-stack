@@ -27,6 +27,7 @@ store_secret() {
   local f="${SOC_SECRETS_DIR}/${name}.txt"
 
   mkdir -p "${SOC_SECRETS_DIR}"
+  chmod 700 "${SOC_SECRETS_DIR}" 2>/dev/null || true
   printf '%s' "${value}" > "${f}"
   chmod 600 "${f}"
 }

@@ -8,6 +8,7 @@ export REPO_ROOT
 # Load bats helpers
 load "${REPO_ROOT}/tests/vendor/bats-support/load"
 load "${REPO_ROOT}/tests/vendor/bats-assert/load"
+bats_require_minimum_version 1.5.0
 
 # Prepend fake-binary fixtures dir to PATH so mocks intercept calls
 export PATH="${REPO_ROOT}/tests/unit/fixtures/bin:${PATH}"
@@ -23,5 +24,6 @@ setup() {
 # Source a lib module under test
 source_lib() {
   local module="$1"
+  # shellcheck source=/dev/null
   source "${REPO_ROOT}/scripts/lib/${module}.sh"
 }

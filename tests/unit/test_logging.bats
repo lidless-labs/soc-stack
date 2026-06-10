@@ -13,6 +13,7 @@ setup() {
   run --separate-stderr msg_info "starting up"
   assert_success
   assert [ -z "${output:-}" ]
+  # shellcheck disable=SC2154
   [[ "${stderr}" == *"starting up"* ]]
 }
 
@@ -28,6 +29,7 @@ setup() {
 
 @test "msg_error writes ERROR level to log and stderr" {
   run --separate-stderr msg_error "boom"
+  # shellcheck disable=SC2154
   [[ "${stderr}" == *"boom"* ]]
   grep "ERROR boom" "${SOC_LOG_FILE}"
 }

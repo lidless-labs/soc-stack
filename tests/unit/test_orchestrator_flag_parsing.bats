@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2030,SC2031
 
 load helpers/load.bash
 
@@ -12,16 +13,19 @@ setup() {
 @test "parse_args sets defaults" {
   parse_args
   [[ "${OPT_COMPONENTS}" == "all" ]]
+  [[ "${OPT_COMPONENTS_SET}" == "0" ]]
   [[ "${OPT_PRESET}" == "standard" ]]
   [[ "${OPT_BRIDGE}" == "vmbr0" ]]
   [[ "${OPT_IP_MODE}" == "dhcp" ]]
   [[ "${OPT_STATE_DIR}" == "/var/lib/soc-stack" ]]
   [[ "${OPT_JSON_OUT}" == "/root/soc-stack.json" ]]
+  [[ "${OPT_MCP_BIND_HOST}" == "127.0.0.1" ]]
 }
 
 @test "parse_args overrides via --components" {
   parse_args --components wazuh,misp
   [[ "${OPT_COMPONENTS}" == "wazuh,misp" ]]
+  [[ "${OPT_COMPONENTS_SET}" == "1" ]]
 }
 
 @test "parse_args overrides --preset minimal" {
@@ -45,6 +49,12 @@ setup() {
   [[ "${OPT_FORCE}" == "1" ]]
 }
 
+@test "parse_args supports security output flags" {
+  parse_args --include-secrets-json --mcp-bind-host 0.0.0.0
+  [[ "${OPT_INCLUDE_SECRETS_JSON}" == "1" ]]
+  [[ "${OPT_MCP_BIND_HOST}" == "0.0.0.0" ]]
+}
+
 @test "parse_args sets OPT_VMID_START" {
   parse_args --vmid-start 9000
   [[ "${OPT_VMID_START}" == "9000" ]]
@@ -60,4 +70,47 @@ setup() {
   run parse_args --not-a-flag
   [[ "$status" -ne 0 ]]
   [[ "${output}${stderr:-}" == *"unknown"* ]]
+}
+
+@test "parse_args fails on missing flag value" {
+  run parse_args --components
+  [[ "$status" -ne 0 ]]
+  [[ "${output}${stderr:-}" == *"missing value"* ]]
+}
+
+@test "validate_options rejects invalid preset" {
+  parse_args --preset tiny
+  run validate_options
+  [[ "$status" -ne 0 ]]
+  [[ "${output}${stderr:-}" == *"invalid preset"* ]]
+}
+
+@test "validate_options rejects static mode without ip range" {
+  parse_args --ip-mode static
+  run validate_options
+  [[ "$status" -ne 0 ]]
+  [[ "${output}${stderr:-}" == *"--ip-range"* ]]
+}
+
+@test "interactive picker toggles selected components when tty is forced" {
+  export SOC_TEST_FORCE_TTY=1
+  OPT_NON_INTERACTIVE="0"
+  OPT_COMPONENTS_SET="0"
+  OPT_MANIFEST=""
+
+  maybe_pick_components <<< $'2\n\n'
+
+  [[ "${OPT_COMPONENTS}" == "wazuh,misp,zeek-suricata,dashboards,mcp" ]]
+  [[ "${OPT_COMPONENTS_SET}" == "1" ]]
+}
+
+@test "interactive picker is bypassed in non-interactive mode" {
+  export SOC_TEST_FORCE_TTY=1
+  OPT_NON_INTERACTIVE="1"
+  OPT_COMPONENTS_SET="0"
+
+  maybe_pick_components <<< $'2\n\n'
+
+  [[ "${OPT_COMPONENTS}" == "all" ]]
+  [[ "${OPT_COMPONENTS_SET}" == "0" ]]
 }

@@ -30,6 +30,8 @@ Run one command on a Proxmox host, or have an agent do it, and ~30 minutes later
 curl -sSL https://raw.githubusercontent.com/solomonneas/soc-stack/main/install.sh | sudo bash
 ```
 
+When run from a local TTY as `sudo bash install.sh`, the installer opens a component picker if you did not pass `--components` or `--manifest`. Piped, CI, and agent-driven installs remain non-interactive and default to the full stack.
+
 **Custom subset:**
 
 ```bash
@@ -51,8 +53,8 @@ curl -sSL https://raw.githubusercontent.com/solomonneas/soc-stack/main/install.s
 ```
 
 After install:
-- `/root/soc-stack.json` lists every component with its LXC VMID, IP, ports, endpoints, and rotated credentials.
-- `/root/mcp-clients.json` is a paste-ready `mcpServers` config block for Claude Desktop, OpenClaw, or any MCP client.
+- `/root/soc-stack.json` lists every component with its LXC VMID, IP, ports, endpoints, warnings, and secret file paths. Raw passwords and API tokens are redacted by default; pass `--include-secrets-json` only when an automation workflow explicitly needs them.
+- `/root/mcp-clients.json` is a paste-ready `mcpServers` config block for Claude Desktop, OpenClaw, or any MCP client. It contains bearer tokens and is written root-only.
 - `/var/lib/soc-stack/state/` has per-component state files used for idempotent re-runs.
 - `/var/lib/soc-stack/secrets/` has every generated credential (mode 0600, root-only) for audit recovery.
 
@@ -115,6 +117,9 @@ Designed so an AI agent can SSH into a Proxmox host and one-shot a SOC. The full
 --force               Redeploy components already marked deployed
 --no-integrate        Skip cross-component wiring phase
 --non-interactive     Hard-fail on prompts (auto when stdin is not a TTY)
+--include-secrets-json
+                       Include raw credentials in result JSON (default: redacted)
+--mcp-bind-host HOST   MCP SSE bind host (default: 127.0.0.1; use 0.0.0.0 to expose)
 --version             Print version and exit
 ```
 

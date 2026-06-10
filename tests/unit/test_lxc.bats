@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2030,SC2031
 
 load helpers/load.bash
 
@@ -52,7 +53,9 @@ setup() {
   MOCK_PCT_CALLS_LOG="${BATS_TEST_TMPDIR}/pct-calls.log"
   export MOCK_PCT_STATUS MOCK_PCT_CALLS_LOG
   lxc_start 9001
-  ! grep -q "pct start 9001" "${MOCK_PCT_CALLS_LOG}"
+  if grep -q "pct start 9001" "${MOCK_PCT_CALLS_LOG}"; then
+    return 1
+  fi
 }
 
 @test "lxc_start invokes pct start when stopped" {

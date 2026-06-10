@@ -50,6 +50,7 @@ setup() {
 @test "emit_final_json writes valid JSON with all component states" {
   state_set wazuh status "deployed"
   state_set wazuh url "https://198.51.100.10"
+  state_set wazuh "credentials.password" "secret-password"
   state_set misp  status "failed"
   state_set misp  error "compose pull timeout"
 
@@ -59,6 +60,7 @@ setup() {
   jq -e '.version == "1.0"' "${out}"
   jq -e '.components | length == 2' "${out}"
   jq -e '.components[] | select(.name == "wazuh") | .status == "deployed"' "${out}"
+  jq -e '.components[] | select(.name == "wazuh") | .credentials.password == "REDACTED"' "${out}"
   jq -e '.components[] | select(.name == "misp")  | .status == "failed"' "${out}"
 }
 
@@ -67,4 +69,33 @@ setup() {
   local out="${BATS_TEST_TMPDIR}/result.json"
   emit_final_json "${out}"
   jq -e '.installed_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T")' "${out}"
+}
+
+@test "emit_final_json includes raw secrets only when explicitly requested" {
+  state_set wazuh status "deployed"
+  state_set wazuh "credentials.password" "secret-password"
+  local out="${BATS_TEST_TMPDIR}/result.json"
+
+  emit_final_json "${out}" 1
+
+  jq -e '.components[] | select(.name == "wazuh") | .credentials.password == "secret-password"' "${out}"
+}
+
+@test "emit_final_json records warning array from environment" {
+  state_set mcp status "deployed"
+  local out="${BATS_TEST_TMPDIR}/result.json"
+
+  SOC_WARNINGS_JSON='["mcp selected without wazuh"]' emit_final_json "${out}"
+
+  jq -e '.warnings[0] == "mcp selected without wazuh"' "${out}"
+}
+
+@test "emit_final_json writes mode 0600 output" {
+  state_set wazuh status "deployed"
+  local out="${BATS_TEST_TMPDIR}/result.json"
+  emit_final_json "${out}"
+
+  local mode
+  mode="$(stat -c "%a" "${out}")"
+  [[ "${mode}" == "600" ]]
 }

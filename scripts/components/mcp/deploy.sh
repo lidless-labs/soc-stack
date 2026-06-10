@@ -4,10 +4,12 @@
 
 set -euo pipefail
 : "${SOC_STATE_DIR:?}"; : "${SOC_COMPONENT:=mcp}"
+: "${SOC_MCP_BIND_HOST:=127.0.0.1}"
 STATE_FILE="${SOC_STATE_DIR}/state/${SOC_COMPONENT}.json"
 SECRETS_DIR="${SOC_STATE_DIR}/secrets"
 INSTALL_DIR="/opt/soc-mcp"
 mkdir -p "${SOC_STATE_DIR}/state" "${SECRETS_DIR}" "${INSTALL_DIR}"
+chmod 700 "${SECRETS_DIR}" 2>/dev/null || true
 
 log() { printf '[mcp-deploy] %s\n' "$*"; }
 write_failed() {
@@ -71,6 +73,10 @@ if [[ "${all_active}" -eq 0 ]]; then
 fi
 
 IP="$(hostname -I | awk '{print $1}')"
+ENDPOINT_HOST="${SOC_MCP_BIND_HOST}"
+if [[ "${ENDPOINT_HOST}" == "0.0.0.0" || "${ENDPOINT_HOST}" == "::" ]]; then
+  ENDPOINT_HOST="${IP}"
+fi
 ENDPOINTS_JSON='[]'
 
 for name in wazuh thehive cortex misp zeek suricata mitre rapid7 sophos; do
@@ -135,9 +141,14 @@ After=network.target
 Type=simple
 EnvironmentFile=${env_file}
 WorkingDirectory=${dest}
-ExecStart=/usr/local/bin/mcp-proxy --sse-port \${PORT} --sse-host 0.0.0.0 -- /usr/bin/node dist/index.js
+ExecStart=/usr/local/bin/mcp-proxy --sse-port \${PORT} --sse-host ${SOC_MCP_BIND_HOST} -- /usr/bin/node dist/index.js
 Restart=on-failure
 RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
 
 [Install]
 WantedBy=multi-user.target
@@ -146,17 +157,19 @@ UEOF
   systemctl daemon-reload
   systemctl enable --now "soc-mcp-${name}.service" >/dev/null 2>&1 || true
 
-  ENDPOINTS_JSON="$(jq --arg n "${name}" --arg url "http://${IP}:${port}/sse" --arg tok "${token}" \
+  ENDPOINTS_JSON="$(jq --arg n "${name}" --arg url "http://${ENDPOINT_HOST}:${port}/sse" --arg tok "${token}" \
     '. + [{name:$n, url:$url, token:$tok}]' <<< "${ENDPOINTS_JSON}")"
 done
 
 jq -n \
   --arg ip "${IP}" \
+  --arg bind_host "${SOC_MCP_BIND_HOST}" \
   --argjson eps "${ENDPOINTS_JSON}" \
   '{
     component: "mcp",
     status: "deployed",
     host_ip: $ip,
+    bind_host: $bind_host,
     mcp_endpoints: $eps,
     services: ($eps | map("soc-mcp-" + .name))
   }' > "${STATE_FILE}"

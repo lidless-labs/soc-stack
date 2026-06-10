@@ -38,6 +38,7 @@ setup() {
   local f="${SOC_SECRETS_DIR}/wazuh-admin.txt"
   [[ -f "$f" ]]
   [[ "$(stat -c '%a' "$f")" == "600" ]]
+  [[ "$(stat -c '%a' "${SOC_SECRETS_DIR}")" == "700" ]]
   [[ "$(cat "$f")" == "hunter2" ]]
 }
 

@@ -15,6 +15,7 @@ setup() {
   emit_mcp_config "${out}"
   jq -e '.mcpServers' "${out}" >/dev/null
   jq -e '.mcpServers | length == 0' "${out}"
+  [[ "$(stat -c "%a" "${out}")" == "600" ]]
 }
 
 @test "emit_mcp_config reads mcp state and produces paste-ready config" {

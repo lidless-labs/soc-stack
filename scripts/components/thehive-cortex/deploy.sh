@@ -22,8 +22,23 @@ STATE_FILE="${SOC_STATE_DIR}/state/${SOC_COMPONENT}.json"
 SECRETS_DIR="${SOC_STATE_DIR}/secrets"
 STACK_DIR="/opt/soc-stack/thehive-cortex"
 mkdir -p "${SOC_STATE_DIR}/state" "${SECRETS_DIR}" "${STACK_DIR}"
+chmod 700 "${SECRETS_DIR}" 2>/dev/null || true
 
 log()  { printf '[thc-deploy] %s\n' "$*"; }
+
+get_or_create_secret() {
+  local name="$1"
+  local file="${SECRETS_DIR}/${name}.txt"
+  if [[ -f "${file}" ]]; then
+    cat "${file}"
+    return 0
+  fi
+  local value
+  value="$(openssl rand -hex 32)"
+  printf '%s' "${value}" > "${file}"
+  chmod 600 "${file}"
+  printf '%s' "${value}"
+}
 
 write_failed() {
   local err="$1"
@@ -93,7 +108,7 @@ apt-get update -qq
 apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
 log "writing docker-compose.yml"
-: "${THEHIVE_SECRET:=$(openssl rand -base64 32 | tr -d '=' | head -c 40)}"
+THEHIVE_SECRET="$(get_or_create_secret thehive-secret)"
 cat > "${STACK_DIR}/docker-compose.yml" <<COMPOSE_EOF
 services:
   cassandra:

@@ -119,6 +119,11 @@ ExecStart=npx vite preview --port ${BROHUNTER_PORT} --host 127.0.0.1
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
 
 [Install]
 WantedBy=multi-user.target
@@ -137,6 +142,11 @@ ExecStart=npx vite preview --port ${PLAYBOOKFORGE_PORT} --host 127.0.0.1
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
 
 [Install]
 WantedBy=multi-user.target

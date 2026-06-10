@@ -21,10 +21,25 @@ STATE_FILE="${SOC_STATE_DIR}/state/${SOC_COMPONENT}.json"
 SECRETS_DIR="${SOC_STATE_DIR}/secrets"
 STACK_DIR="/opt/soc-stack/misp"
 mkdir -p "${SOC_STATE_DIR}/state" "${SECRETS_DIR}" "${STACK_DIR}"
+chmod 700 "${SECRETS_DIR}" 2>/dev/null || true
 
 MISP_ADMIN_EMAIL="admin@admin.test"
 
 log() { printf '[misp-deploy] %s\n' "$*"; }
+
+get_or_create_secret() {
+  local name="$1"
+  local file="${SECRETS_DIR}/${name}.txt"
+  if [[ -f "${file}" ]]; then
+    cat "${file}"
+    return 0
+  fi
+  local value
+  value="$(openssl rand -hex 24)"
+  printf '%s' "${value}" > "${file}"
+  chmod 600 "${file}"
+  printf '%s' "${value}"
+}
 
 write_failed() {
   local err="$1"
@@ -83,7 +98,9 @@ apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugi
 log "writing docker-compose.yml"
 # CRITICAL gotcha (docs/gotchas.md): default InnoDB buffer pool is 2GB, causes
 # OOM on 4GB hosts. Hardcode 512M; sufficient for standard preset (4GB RAM).
-cat > "${STACK_DIR}/docker-compose.yml" <<'COMPOSE_EOF'
+MISP_DB_PASS="$(get_or_create_secret misp-db)"
+MISP_DB_ROOT_PASS="$(get_or_create_secret misp-db-root)"
+cat > "${STACK_DIR}/docker-compose.yml" <<COMPOSE_EOF
 services:
   misp-core:
     image: ghcr.io/misp/misp-docker/misp-core:latest
@@ -96,7 +113,7 @@ services:
       MISP_ADMIN_EMAIL: "admin@admin.test"
       MISP_ADMIN_PASSPHRASE: "admin"
       MISP_BASEURL: "https://localhost"
-      MYSQL_PASSWORD: "misp-secret"
+      MYSQL_PASSWORD: "${MISP_DB_PASS}"
     volumes:
       - misp-data:/var/www/MISP
     depends_on:
@@ -118,8 +135,8 @@ services:
     environment:
       MYSQL_DATABASE: misp
       MYSQL_USER: misp
-      MYSQL_PASSWORD: "misp-secret"
-      MYSQL_ROOT_PASSWORD: "root-secret"
+      MYSQL_PASSWORD: "${MISP_DB_PASS}"
+      MYSQL_ROOT_PASSWORD: "${MISP_DB_ROOT_PASS}"
       INNODB_BUFFER_POOL_SIZE: "512M"
     volumes:
       - misp-db-data:/var/lib/mysql
