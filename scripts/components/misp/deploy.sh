@@ -61,6 +61,12 @@ if docker compose -f "${STACK_DIR}/docker-compose.yml" ps 2>/dev/null | grep -q 
   MISP_PASS="$(cat "${SECRETS_DIR}/misp-admin.txt" 2>/dev/null || echo "")"
   MISP_KEY="$(cat "${SECRETS_DIR}/misp-apikey.txt" 2>/dev/null || echo "")"
 
+  # Never report deployed with missing credentials: a previous run that died
+  # mid-rotation would otherwise look healthy while nothing can authenticate.
+  if [[ -z "${MISP_PASS}" || -z "${MISP_KEY}" ]]; then
+    write_failed "stack is running but stored credentials are incomplete under ${SECRETS_DIR}; run destroy.sh for misp, then redeploy"
+  fi
+
   jq -n \
     --arg ip "${IP}" \
     --arg pw "${MISP_PASS}" \
@@ -222,16 +228,25 @@ log "API key obtained (${#MISP_API_KEY} chars)"
 # --- Admin password rotation ---
 # Use printf | curl to avoid bash history expansion on special chars.
 # POST /users/edit/1 with JSON body, Authorization: <api_key> header.
-MISP_ADMIN_PASS="$(openssl rand -hex 12)"
+# Persisted before rotation so a crash mid-rotation is recoverable on re-run.
+MISP_ADMIN_PASS="$(get_or_create_secret misp-admin)"
 log "rotating admin password"
 printf '{"password":"%s","confirm_password":"%s"}' \
   "${MISP_ADMIN_PASS}" "${MISP_ADMIN_PASS}" \
-  | curl -sk -X POST "https://localhost/users/edit/1" \
+  | curl -skf -X POST "https://localhost/users/edit/1" \
       -H "Authorization: ${MISP_API_KEY}" \
       -H "Content-Type: application/json" \
       -H "Accept: application/json" \
       --data @- \
-      -o /dev/null
+      -o /dev/null \
+  || write_failed "MISP admin password rotation request failed (default passphrase may still be active)"
+
+# Verify the API key actually authenticates before reporting deployed.
+curl -skf "https://localhost/users/view/me" \
+  -H "Authorization: ${MISP_API_KEY}" \
+  -H "Accept: application/json" \
+  -o /dev/null \
+  || write_failed "MISP API key verification failed after rotation"
 
 # --- Persist secrets ---
 printf '%s' "${MISP_ADMIN_PASS}" > "${SECRETS_DIR}/misp-admin.txt"

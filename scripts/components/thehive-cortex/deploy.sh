@@ -65,6 +65,12 @@ if grep -qx "thehive" <<< "${services_running}" \
   CORTEX_PASS="$(cat "${SECRETS_DIR}/cortex-admin.txt" 2>/dev/null || echo "")"
   CORTEX_KEY="$(cat "${SECRETS_DIR}/cortex-apikey.txt" 2>/dev/null || echo "")"
 
+  # Never report deployed with missing credentials: a previous run that died
+  # mid-rotation would otherwise look healthy while nothing can authenticate.
+  if [[ -z "${THEHIVE_PASS}" || -z "${THEHIVE_KEY}" || -z "${CORTEX_PASS}" || -z "${CORTEX_KEY}" ]]; then
+    write_failed "stack is running but stored credentials are incomplete under ${SECRETS_DIR}; run destroy.sh for thehive-cortex, then redeploy"
+  fi
+
   jq -n \
     --arg ip "${IP}" \
     --arg thp "${THEHIVE_PASS}" --arg thk "${THEHIVE_KEY}" \
@@ -292,28 +298,44 @@ CORTEX_API_KEY="$(curl -sf -b "${CJAR}" \
 # --- TheHive admin password rotation + API key ---
 log "rotating TheHive admin password + minting API key"
 THEHIVE_DEFAULT_PASS="secret"
-THEHIVE_ADMIN_PASS="$(openssl rand -hex 12)"
+# Persisted before rotation so a crash mid-rotation is recoverable on re-run.
+THEHIVE_ADMIN_PASS="$(get_or_create_secret thehive-admin)"
 
-# Login with default
+thehive_login() {
+  local pass="$1"
+  local jar="$2"
+  curl -sf -c "${jar}" -H "Content-Type: application/json" \
+    -X POST "http://localhost:9000/api/v1/session" \
+    -d "{\"login\":\"admin@thehive.local\",\"password\":\"${pass}\"}" >/dev/null 2>&1
+}
+
 TCJAR="$(mktemp)"
-curl -sf -c "${TCJAR}" -H "Content-Type: application/json" \
-  -X POST "http://localhost:9000/api/v1/session" \
-  -d "{\"login\":\"admin@thehive.local\",\"password\":\"${THEHIVE_DEFAULT_PASS}\"}" >/dev/null
+if thehive_login "${THEHIVE_ADMIN_PASS}" "${TCJAR}"; then
+  log "TheHive admin password already rotated (previous run)"
+elif thehive_login "${THEHIVE_DEFAULT_PASS}" "${TCJAR}"; then
+  # Change password (uses /password/change endpoint, NOT /user)
+  curl -sf -b "${TCJAR}" -H "Content-Type: application/json" \
+    -X POST "http://localhost:9000/api/v1/user/admin%40thehive.local/password/change" \
+    -d "{\"currentPassword\":\"${THEHIVE_DEFAULT_PASS}\",\"password\":\"${THEHIVE_ADMIN_PASS}\"}" >/dev/null \
+    || write_failed "TheHive admin password rotation request failed"
 
-# Change password (uses /password/change endpoint, NOT /user)
-curl -sf -b "${TCJAR}" -H "Content-Type: application/json" \
-  -X POST "http://localhost:9000/api/v1/user/admin%40thehive.local/password/change" \
-  -d "{\"currentPassword\":\"${THEHIVE_DEFAULT_PASS}\",\"password\":\"${THEHIVE_ADMIN_PASS}\"}" >/dev/null
-
-# Re-login with new password
-TCJAR="$(mktemp)"
-curl -sf -c "${TCJAR}" -H "Content-Type: application/json" \
-  -X POST "http://localhost:9000/api/v1/session" \
-  -d "{\"login\":\"admin@thehive.local\",\"password\":\"${THEHIVE_ADMIN_PASS}\"}" >/dev/null
+  # Verify: the new password must log in. The component is not deployed
+  # until the upstream default credential is confirmed dead.
+  TCJAR="$(mktemp)"
+  thehive_login "${THEHIVE_ADMIN_PASS}" "${TCJAR}" \
+    || write_failed "TheHive password rotation could not be verified (new password rejected)"
+  if thehive_login "${THEHIVE_DEFAULT_PASS}" "$(mktemp)"; then
+    write_failed "TheHive default password still accepted after rotation"
+  fi
+  log "TheHive admin password rotated and verified"
+else
+  write_failed "TheHive admin login failed with both stored and default credentials"
+fi
 
 # Mint API key
 THEHIVE_API_KEY="$(curl -sf -b "${TCJAR}" -H "Content-Type: application/json" \
   -X POST "http://localhost:9000/api/v1/user/admin%40thehive.local/key/renew" | tr -d '"\n')"
+[[ -n "${THEHIVE_API_KEY}" ]] || write_failed "failed to mint TheHive API key"
 
 # Persist secrets
 printf '%s' "${THEHIVE_ADMIN_PASS}" > "${SECRETS_DIR}/thehive-admin.txt"
