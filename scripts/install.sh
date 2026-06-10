@@ -641,13 +641,34 @@ deploy_one() {
   return 0
 }
 
+# deploy_exit_status <failures> <successes>
+# Exit-code contract: 0 = all deployed, 3 = all requested components failed,
+# 5 = mixed state (some deployed, some failed). 4 (integration failed) is
+# applied by main() after the integration phase.
+deploy_exit_status() {
+  local failures="$1"
+  local successes="$2"
+  if (( failures > 0 )); then
+    if (( successes > 0 )); then
+      printf '5'
+    else
+      printf '3'
+    fi
+  else
+    printf '0'
+  fi
+}
+
 # integrate_all - run each deployed component's integrate.sh
+# Records integration.status in each component's state file and returns
+# non-zero if any integrate.sh failed (drives exit codes 4/5).
 integrate_all() {
   if [[ "${OPT_NO_INTEGRATE}" == "1" ]]; then
     msg_info "skipping integration phase (--no-integrate)"
     return 0
   fi
   local f
+  local failures=0
   for f in "${COMPONENTS_DIR}"/*/integrate.sh; do
     [[ -x "${f}" ]] || continue
     local comp_name
@@ -657,8 +678,15 @@ integrate_all() {
       continue
     fi
     msg_info "running ${comp_name}/integrate.sh"
-    SOC_STATE_DIR="${SOC_STATE_DIR}" "${f}" || msg_warn "${comp_name} integrate.sh returned non-zero"
+    if SOC_STATE_DIR="${SOC_STATE_DIR}" "${f}"; then
+      state_set "${comp_name}" "integration.status" "integrated"
+    else
+      record_warning "${comp_name} integrate.sh returned non-zero"
+      state_set "${comp_name}" "integration.status" "failed"
+      failures=$((failures + 1))
+    fi
   done
+  [[ "${failures}" -eq 0 ]]
 }
 
 main() {
@@ -701,12 +729,18 @@ main() {
 
   local component
   local component_index=0
+  local deploy_failures=0
+  local deploy_successes=0
   for component in "${components_arr[@]}"; do
-    if ! deploy_one "${component}" "${manifest}" "${component_index}"; then
-      exit_status=3
+    if deploy_one "${component}" "${manifest}" "${component_index}"; then
+      deploy_successes=$((deploy_successes + 1))
+    else
+      deploy_failures=$((deploy_failures + 1))
     fi
     component_index=$((component_index + 1))
   done
+
+  exit_status="$(deploy_exit_status "${deploy_failures}" "${deploy_successes}")"
 
   # Only mark completed if verify passed (set inside deploy_one upon success
   # via state file; this confirms via is_completed check)
@@ -717,7 +751,11 @@ main() {
   done
 
   # Integration phase
-  integrate_all
+  local integrate_ok=1
+  integrate_all || integrate_ok=0
+  if (( integrate_ok == 0 )) && (( exit_status == 0 )); then
+    exit_status=4
+  fi
 
   # Emit results
   SOC_WARNINGS_JSON="$(warnings_json)" \
