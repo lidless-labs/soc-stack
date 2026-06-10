@@ -40,11 +40,22 @@ thehive_key="$(jq -r '.thehive.api_key // empty' "${THEHIVE_STATE}")"
   log "missing TheHive URL or API key, skipping"
   exit 0
 }
+# Both values are interpolated into a heredoc and a sed expression below;
+# reject anything outside the charset our own deploys produce.
+if [[ ! "${thehive_url}" =~ ^https?://[A-Za-z0-9_.:-]+(/[A-Za-z0-9_./-]*)?$ ]]; then
+  log "TheHive URL has unexpected characters, refusing to wire: ${thehive_url}"
+  exit 1
+fi
+if [[ ! "${thehive_key}" =~ ^[A-Za-z0-9_+=./-]+$ ]]; then
+  log "TheHive API key has unexpected characters, refusing to wire"
+  exit 1
+fi
 
 log "configuring Wazuh -> TheHive webhook (vmid=${wazuh_vmid} -> ${thehive_url})"
 
 # Push the integration script into the Wazuh LXC
 INTEG_PY="/tmp/custom-thehive.py"
+trap 'rm -f "${INTEG_PY}"' EXIT
 cat > "${INTEG_PY}" <<PYEOF
 #!/usr/bin/env python3
 """custom-thehive: forward Wazuh alerts to TheHive 5."""

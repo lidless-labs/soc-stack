@@ -15,20 +15,28 @@ mcp_status="$(jq -r '.status // empty' "${MCP_STATE}")"
 mcp_vmid="$(jq -r '.lxc.vmid // empty' "${MCP_STATE}")"
 [[ -n "${mcp_vmid}" ]] || { log "mcp has no VMID"; exit 0; }
 
+# Temp files hold credentials; make sure they vanish even if a pct call dies.
+TMP_CLEANUP=()
+trap '[[ ${#TMP_CLEANUP[@]} -gt 0 ]] && rm -f "${TMP_CLEANUP[@]}"' EXIT
+
 write_env() {
   local server="$1"; shift
   # remaining args are KEY=value pairs
   local env_file="/etc/soc-mcp/${server}.env"
   local tmp
   tmp="$(mktemp)"
+  TMP_CLEANUP+=("${tmp}")
   pct exec "${mcp_vmid}" -- cat "${env_file}" > "${tmp}" 2>/dev/null || true
+  # Rebuild line-by-line instead of sed: credential values must never be
+  # interpolated into a sed expression (delimiters/backrefs corrupt the file).
+  local kv key
   for kv in "$@"; do
     key="${kv%%=*}"
     if grep -q "^${key}=" "${tmp}"; then
-      sed -i "s|^${key}=.*|${kv}|" "${tmp}"
-    else
-      printf '%s\n' "${kv}" >> "${tmp}"
+      grep -v "^${key}=" "${tmp}" > "${tmp}.new" || true
+      mv "${tmp}.new" "${tmp}"
     fi
+    printf '%s\n' "${kv}" >> "${tmp}"
   done
   pct push "${mcp_vmid}" "${tmp}" "${env_file}"
   pct exec "${mcp_vmid}" -- chmod 600 "${env_file}"

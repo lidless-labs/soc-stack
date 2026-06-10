@@ -607,7 +607,7 @@ deploy_one() {
     local fname
     fname="$(basename "${remote}")"
     pct pull "${vmid}" "${remote}" "${SOC_SECRETS_DIR}/${fname}" 2>/dev/null || true
-  done < <(pct exec "${vmid}" -- bash -c "ls ${SOC_SECRETS_DIR}/* 2>/dev/null" || true)
+  done < <(pct exec "${vmid}" -- bash -c "ls \"${SOC_SECRETS_DIR}\"/* 2>/dev/null" || true)
 
   # Persist LXC info into host state now (after pull, so we merge on top)
   state_set "${component}" "lxc.vmid" "${vmid}"

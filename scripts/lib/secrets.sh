@@ -26,10 +26,15 @@ store_secret() {
   local value="$2"
   local f="${SOC_SECRETS_DIR}/${name}.txt"
 
-  mkdir -p "${SOC_SECRETS_DIR}"
-  chmod 700 "${SOC_SECRETS_DIR}" 2>/dev/null || true
-  printf '%s' "${value}" > "${f}"
-  chmod 600 "${f}"
+  # Subshell umask: dir and file are born private, no permissive window
+  # between create and chmod even with a loose inherited umask.
+  (
+    umask 0077
+    mkdir -p "${SOC_SECRETS_DIR}"
+    chmod 700 "${SOC_SECRETS_DIR}" 2>/dev/null || true
+    printf '%s' "${value}" > "${f}"
+    chmod 600 "${f}"
+  )
 }
 
 # get_secret <name>

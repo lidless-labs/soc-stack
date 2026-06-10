@@ -58,6 +58,11 @@ echo 'export PATH="/opt/zeek/bin:$PATH"' > /etc/profile.d/zeek.sh
 
 IFACE="$(ip route show default | awk '{print $5}' | head -1)"
 IFACE="${IFACE:-eth0}"
+# IFACE lands in a sed replacement and config files; fall back rather than
+# interpolate an unexpected name (kernel allows more chars than configs do).
+if [[ ! "${IFACE}" =~ ^[A-Za-z0-9_.@-]+$ ]]; then
+  IFACE="eth0"
+fi
 
 # Configure Zeek node.cfg
 if [[ -f /opt/zeek/etc/node.cfg ]]; then
