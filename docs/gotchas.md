@@ -2,7 +2,9 @@
 
 Consolidated from production deployments. If a script doesn't handle one of these, it's a bug.
 
-## Hyper-V / VM Creation
+## Hyper-V / VM Creation (legacy)
+
+> SOC Stack v1.0.0 is Proxmox LXC only; the Hyper-V deployment path was removed. This section is kept for anyone running the tools on Hyper-V by hand.
 
 ### VHDX Sparse File Attribute (Showstopper)
 **Symptom:** `Start-VM` or `Resize-VHD` fails with error `0xC03A001A: Virtual hard disk files must be uncompressed and unencrypted and must not be sparse.`

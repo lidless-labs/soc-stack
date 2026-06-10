@@ -7,7 +7,7 @@
 ## Test plan
 - [ ] Bats unit tests pass (`./tests/unit/run.sh`)
 - [ ] Shellcheck clean
-- [ ] Integration assertion passes on proxmox-host (if touching a component or lib)
+- [ ] Integration assertion passes on the self-hosted Proxmox runner (if touching a component or lib)
 - [ ] No em-dashes in commit messages or files
 - [ ] No `Co-Authored-By` trailers
 

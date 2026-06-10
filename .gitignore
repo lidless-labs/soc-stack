@@ -30,7 +30,7 @@ IMPLEMENTATION_*.md
 .claude/
 .codex/
 .learnings/
-docs/superpowers/
+docs/design/plans/
 **/memory-handoffs/
 
 # OpenClaw files

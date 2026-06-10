@@ -2,6 +2,12 @@
 
 Nine Model Context Protocol servers for AI-augmented security operations. Each server connects an AI assistant (Claude, GPT, or any MCP client) directly to a security tool via the standardized MCP protocol.
 
+## Bundled vs standalone
+
+The SOC Stack installer is **self-contained**: `scripts/components/mcp/deploy.sh` clones each server at a pinned commit, builds it inside the MCP LXC, and exposes it over SSE via `mcp-proxy`, with credentials wired in automatically from peer component state. You do not need to install anything from this page when using the installer.
+
+The per-server repositories linked below are the same code as standalone projects: use them when you want to run a single server against an existing tool (your own Wazuh, a production TheHive) outside of SOC Stack, or to fork and customize. The environment variables documented per server apply in both cases.
+
 ## Server Overview
 
 ### API-Based (REST Client)

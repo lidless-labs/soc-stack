@@ -93,7 +93,7 @@ Designed so an AI agent can SSH into a Proxmox host and one-shot a SOC. The full
 
 - **Stdin is closed** under `curl | sudo bash`; the installer auto-detects this and enables `--non-interactive` mode. Every prompt becomes a flag, every default becomes an answer.
 - **Exit codes** are stable: 0 = success, 1 = preflight (bad host), 2 = validation (bad flags), 3 = component failed, 4 = integration failed, 5 = mixed state.
-- **Result JSON schema** is documented in [`docs/superpowers/specs/2026-05-15-soc-stack-unification-design.md`](docs/superpowers/specs/2026-05-15-soc-stack-unification-design.md).
+- **Result JSON schema** is documented in [`docs/design/specs/2026-05-15-soc-stack-unification-design.md`](docs/design/specs/2026-05-15-soc-stack-unification-design.md).
 - **Idempotency**: re-running with the same flags exits in seconds if everything is already deployed (`status: "deployed"` in state). `--force` triggers redeploy.
 - **Manifest mode**: instead of dozens of flags, write a JSON manifest and pass `--manifest <path>`. CLI flags applied on top override individual manifest fields.
 
@@ -147,19 +147,17 @@ soc-stack/
 │       ├── dashboards/
 │       └── mcp/                # 9 MCP servers + mcp-proxy SSE bridge
 ├── tests/
-│   ├── unit/                   # 78 bats tests, mocked Proxmox binaries
+│   ├── unit/                   # 105 bats tests, mocked Proxmox binaries
 │   └── integration/            # per-component + cross-component assertions
 ├── docs/
-│   ├── superpowers/
-│   │   ├── specs/              # design specs
-│   │   └── plans/              # implementation plans
+│   ├── design/specs/           # design spec (result JSON schema lives here)
 │   ├── gotchas.md
-│   ├── adding-a-stack.md       # to be renamed adding-a-component.md in v1.0.0
+│   ├── adding-a-component.md   # component contract walk-through
 │   └── architecture/
 ├── playbooks/                  # incident response playbooks
 ├── cases/                      # case study evidence
 └── mcp-servers/
-    └── README.md               # index of the 9 MCP servers (each in its own repo)
+    └── README.md               # docs for the 9 bundled MCP servers
 ```
 
 ## How it works
@@ -207,16 +205,30 @@ Already-deployed components are skipped by the idempotency check, so a plain re-
 sudo bash install.sh --components all --dry-run
 ```
 
+**Remove a single component:**
+```bash
+sudo bash scripts/components/misp/destroy.sh
+```
+This stops and destroys the component's LXC and removes its state file. Other components keep running; re-run the installer afterwards if peers should drop their wiring to it.
+
 **Tear down everything:**
 ```bash
 for comp in mcp dashboards zeek-suricata misp thehive-cortex wazuh; do
   sudo bash scripts/components/${comp}/destroy.sh
 done
+sudo rm -rf /var/lib/soc-stack /root/soc-stack.json /root/mcp-clients.json
 ```
+The final `rm` removes state, generated secrets, and the emitted JSON; skip it if you want credential recovery later.
+
+**Upgrade:**
+```bash
+curl -sSL https://raw.githubusercontent.com/solomonneas/soc-stack/main/install.sh | sudo bash
+```
+Re-running the installer from a newer checkout is the upgrade path: already-deployed components are left alone, new components deploy, and integration re-wires. To pick up a new version of one component, destroy it and re-run with `--components <name>`. The installer never auto-updates a running component in place.
 
 ## Adding a new component
 
-See [docs/adding-a-stack.md](docs/adding-a-stack.md) for the component contract walk-through, and [docs/superpowers/specs/2026-05-15-soc-stack-unification-design.md](docs/superpowers/specs/2026-05-15-soc-stack-unification-design.md) for the full design.
+See [docs/adding-a-component.md](docs/adding-a-component.md) for the component contract walk-through, and [docs/design/specs/2026-05-15-soc-stack-unification-design.md](docs/design/specs/2026-05-15-soc-stack-unification-design.md) for the full design.
 
 ## Security
 

@@ -94,7 +94,7 @@ Two layers run on every PR:
 - No em-dashes in code or commit messages
 - All shellcheck-clean
 
-Open a PR; CI runs shellcheck + bats + manifest-schema (GitHub-hosted) plus per-component integration (proxmox-host). Merge to main triggers full-stack integration.
+Open a PR; CI runs shellcheck + bats + manifest-schema (GitHub-hosted) plus per-component integration on the self-hosted Proxmox runner. Merge to main triggers full-stack integration.
 
 ## License
 

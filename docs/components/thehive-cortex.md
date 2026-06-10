@@ -1,7 +1,7 @@
 # TheHive 5.4 + Cortex 3.1.8 Deployment
 
 ## Prerequisites
-- A Hyper-V VM created with `scripts/create-vm.ps1` (or any Ubuntu 24.04 box with Docker)
+- An LXC provisioned by the SOC Stack orchestrator (or any Ubuntu 22.04/24.04 box with Docker)
 - Docker and Docker Compose v2 installed (cloud-init handles this)
 - SSH access to the VM
 

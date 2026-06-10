@@ -2,6 +2,28 @@
 
 All notable changes to soc-stack are documented in this file. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- TTY component picker when run locally without `--components`/`--manifest`
+- `--include-secrets-json` (result JSON redacts credentials by default) and `--mcp-bind-host` (MCP SSE binds 127.0.0.1 by default)
+- `SECURITY.md` documenting the threat model and hardening posture
+- `docs/adding-a-component.md` (replaces the stale `docs/adding-a-stack.md`)
+- Bats coverage for the exit-code contract, integration state tracking, and IP allocation bounds (105 unit tests)
+
+### Fixed
+- Exit-code contract: integration failures now produce exit 4/5 as documented; `integration.status` is tracked per component
+- `allocate_ip` bounds-checks the last octet instead of emitting invalid addresses
+- TheHive/MISP default-credential rotation is verified before a component reports deployed; idempotent re-runs refuse to report deployed with missing credentials
+- MCP env files are rebuilt without passing credentials through sed; secrets written under `umask 0077`
+- README operations example used an unsupported `--no-integrate=false` flag form
+
+### Changed
+- MCP server repos are cloned at pinned commit SHAs instead of tracking `origin/HEAD`
+- MISP database passwords are generated per install (were hardcoded compose values)
+- systemd units for MCP servers and dashboards run with hardening directives
+- Design docs moved from `docs/superpowers/` to `docs/design/`; the result-JSON spec is now tracked in the repo
+
 ## [1.0.0] - 2026-05-16
 
 Initial stable release. All 6 components deploy end-to-end at `--preset minimal` on Proxmox VE 7.x / 8.x / 9.x, with 5 cross-component integrations wired automatically. CI runs on every PR.
@@ -43,7 +65,7 @@ All 6 components deploy and assert green on Proxmox VE. 5/5 cross-component inte
 - `wazuh-install.sh -i` flag is preset-gated (only minimal needs it)
 - `wazuh/integrate.sh`: full implementation (was a Plan 1 stub)
 - `lxc_wait_network` default: 60s -> 180s
-- Various fixes across all 5 new components (23 distinct bugs caught and fixed during proxmox-host smoke testing)
+- Various fixes across all 5 new components (23 distinct bugs caught and fixed during smoke testing on the staging Proxmox host)
 
 ## [0.5.0] - 2026-05-15
 
@@ -56,8 +78,8 @@ Foundation. Wazuh deployable end-to-end via the unified orchestrator.
 - `tests/unit/`: bats-core 1.11.0 vendored, mocked Proxmox binaries
 - `tests/integration/{setup,destroy}-test-env.sh`, `assert-wazuh.sh`
 - `install.sh` at repo root: wrapper for `curl | sudo bash` invocation
-- `docs/superpowers/specs/2026-05-15-soc-stack-unification-design.md`: full design spec
-- `docs/superpowers/plans/2026-05-15-soc-stack-foundations-plan-1.md`: 31-task plan
+- `docs/design/specs/2026-05-15-soc-stack-unification-design.md`: full design spec
+- `docs/design/plans/2026-05-15-soc-stack-foundations-plan-1.md`: 31-task plan
 
 ## [0.1.0] - 2026-04-29
 
