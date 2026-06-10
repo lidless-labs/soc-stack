@@ -218,6 +218,10 @@ done
 
 See [docs/adding-a-stack.md](docs/adding-a-stack.md) for the component contract walk-through, and [docs/superpowers/specs/2026-05-15-soc-stack-unification-design.md](docs/superpowers/specs/2026-05-15-soc-stack-unification-design.md) for the full design.
 
+## Security
+
+Default credentials are rotated and verified on deploy, secrets are root-only, result JSON is redacted by default, and MCP servers bind to localhost unless you say otherwise. The full threat model, what is hardened versus deliberately accepted, lives in [SECURITY.md](SECURITY.md).
+
 ## License
 
 MIT
