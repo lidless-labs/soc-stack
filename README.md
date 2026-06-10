@@ -196,10 +196,11 @@ The installer auto-installs `jq`, `curl`, `wget`, and `openssl` if missing.
 sudo bash install.sh --components misp --force
 ```
 
-**Re-run only the integration phase (after fixing a peer):**
+**Re-run the integration phase (after fixing a peer):**
 ```bash
-sudo bash install.sh --components all --no-integrate=false
+sudo bash install.sh --components all
 ```
+Already-deployed components are skipped by the idempotency check, so a plain re-run goes straight to cross-component wiring.
 
 **Validate without deploying:**
 ```bash
