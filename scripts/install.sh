@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/install.sh - SOC Stack unified Proxmox installer
-# Spec: docs/superpowers/specs/2026-05-15-soc-stack-unification-design.md
+# Spec: docs/design/specs/2026-05-15-soc-stack-unification-design.md
 
 set -euo pipefail
 

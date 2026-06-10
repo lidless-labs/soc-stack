@@ -39,7 +39,7 @@ Effect:
 gh api repos/solomonneas/soc-stack/actions/runners --jq '.runners[] | {name, status, labels: [.labels[].name]}'
 ```
 
-Expect to see one runner named `soc-stack-proxmox-host` (or your equivalent) with `status: "online"` and the three labels.
+Expect to see one runner named `soc-stack-<hostname>` with `status: "online"` and the three labels.
 
 ## Replacing the runner token
 
@@ -59,7 +59,7 @@ sudo -u runner ./config.sh remove --token <removal-token-from-github-ui>
 - Test LXCs (peak): ~12 GB RAM across all 6 components at `--preset minimal`
 - Total CI footprint at peak: ~16 GB RAM, ~150 GB disk
 
-For proxmox-host (32 GB total), this fits as long as no more than one test run is active. The CI workflow uses a `concurrency` group `soc-stack-integration` to enforce serial execution across PRs.
+For a 32 GB host, this fits as long as no more than one test run is active. The CI workflow uses a `concurrency` group `soc-stack-integration` to enforce serial execution across PRs.
 
 ## Manual reap
 

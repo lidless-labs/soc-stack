@@ -154,12 +154,13 @@ if ! pct exec "${VMID}" -- test -f /home/runner/.runner; then
     rm actions-runner-linux-x64-${LATEST}.tar.gz
     chown -R runner:runner /home/runner/actions-runner
   '
+  RUNNER_NAME="soc-stack-$(hostname)"
   pct exec "${VMID}" -- sudo -u runner bash -c "
     cd /home/runner/actions-runner
     ./config.sh --unattended --replace \
       --url https://github.com/solomonneas/soc-stack \
       --token '${GITHUB_RUNNER_TOKEN}' \
-      --name 'soc-stack-proxmox-host' \
+      --name '${RUNNER_NAME}' \
       --labels 'self-hosted,soc-stack,proxmox' \
       --work _work
   "
