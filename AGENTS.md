@@ -1,7 +1,15 @@
 # Repository Guidance
 
 ## Definition of Done
-Before reporting any code change as complete, run ALL of these and confirm they pass:
+Before reporting any code change as complete, run the single verification entrypoint and confirm it exits 0:
+
+```bash
+./scripts/verify
+```
+
+It runs the bats submodule init (if missing), the unit tests, the CI shellcheck invocation, and the CI manifest validation, all local and read-only against Proxmox.
+
+For reference, the individual steps it runs in order:
 1. `git submodule update --init` (once per clone; bats lives in `tests/vendor/`, tests will not start without it)
 2. `./tests/unit/run.sh`
 3. Shellcheck, exactly as CI (`.github/workflows/ci.yml`) runs it:

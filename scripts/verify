@@ -1,0 +1,31 @@
+#!/bin/bash
+# Single verification entrypoint. AGENTS.md's Definition of Done defers to
+# this file, so the gate lives in exactly one place. Everything here is
+# local and read-only against Proxmox: no deploys, no dry-run installs.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+# 1. Bats lives in tests/vendor/; tests will not start without it.
+if [ ! -e tests/vendor/bats-core/bin/bats ]; then
+  git submodule update --init
+fi
+
+# 2. Unit tests.
+./tests/unit/run.sh
+
+# 3. Shellcheck, exactly as CI (.github/workflows/ci.yml) runs it.
+shellcheck --severity=warning install.sh
+shellcheck --severity=warning scripts/install.sh
+shellcheck --severity=warning scripts/lib/*.sh
+shellcheck --severity=warning scripts/components/*/*.sh
+shellcheck --severity=warning tests/integration/*.sh
+shellcheck --severity=warning tools/*.sh
+
+# 4. Manifest validation, exactly as CI runs it.
+for m in scripts/components/*/manifest.jsonc; do
+  echo "checking ${m}"
+  sed 's://.*$::g' "${m}" | jq -e .name >/dev/null
+  sed 's://.*$::g' "${m}" | jq -e .presets >/dev/null
+done
+
+echo "verify: all gates passed"
