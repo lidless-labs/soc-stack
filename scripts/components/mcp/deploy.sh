@@ -18,18 +18,21 @@ write_failed() {
 }
 trap 'write_failed "aborted on line $LINENO"' ERR
 
-# Server inventory: name | repo | port | env-key-list
+# Server inventory: name | repo | pinned ref | port | env-key-list
 # env-key-list documents what env vars integrate.sh will populate later.
+# Refs are pinned commit SHAs (supply-chain: a compromised upstream repo
+# cannot change what gets deployed). Bump deliberately; SHAs verified
+# against each repo's main on 2026-06-10.
 declare -A SERVERS=(
-  [wazuh]="https://github.com/solomonneas/wazuh-mcp.git|3001|WAZUH_URL,WAZUH_USER,WAZUH_PASSWORD"
-  [thehive]="https://github.com/solomonneas/thehive-mcp.git|3002|THEHIVE_URL,THEHIVE_API_KEY"
-  [cortex]="https://github.com/solomonneas/cortex-mcp.git|3003|CORTEX_URL,CORTEX_API_KEY"
-  [misp]="https://github.com/solomonneas/misp-mcp.git|3004|MISP_URL,MISP_API_KEY"
-  [zeek]="https://github.com/solomonneas/zeek-mcp.git|3005|ZEEK_LOG_DIR,ZEEK_LOG_FORMAT"
-  [suricata]="https://github.com/solomonneas/suricata-mcp.git|3006|SURICATA_EVE_PATH"
-  [mitre]="https://github.com/solomonneas/mitre-mcp.git|3007|MITRE_DATA_DIR"
-  [rapid7]="https://github.com/solomonneas/rapid7-mcp.git|3008|RAPID7_URL,RAPID7_API_KEY"
-  [sophos]="https://github.com/solomonneas/sophos-mcp.git|3009|SOPHOS_CLIENT_ID,SOPHOS_CLIENT_SECRET"
+  [wazuh]="https://github.com/solomonneas/wazuh-mcp.git|c88fbbb5dc5afc3112c0bf28af8fefd3c98ae3a5|3001|WAZUH_URL,WAZUH_USER,WAZUH_PASSWORD"
+  [thehive]="https://github.com/solomonneas/thehive-mcp.git|800a064bd5a5f4a30791185b89b50b6d9a0604a5|3002|THEHIVE_URL,THEHIVE_API_KEY"
+  [cortex]="https://github.com/solomonneas/cortex-mcp.git|a8e707d58b260c976eff562aade655f060347da4|3003|CORTEX_URL,CORTEX_API_KEY"
+  [misp]="https://github.com/solomonneas/misp-mcp.git|0177f296d1b3078fcfdcec31e19e5291c939a32e|3004|MISP_URL,MISP_API_KEY"
+  [zeek]="https://github.com/solomonneas/zeek-mcp.git|b14c6480b3a62b7fd89c7daf55eb15f7a83aeca2|3005|ZEEK_LOG_DIR,ZEEK_LOG_FORMAT"
+  [suricata]="https://github.com/solomonneas/suricata-mcp.git|ab560c00af148ebda51b050515b6a79adec2e7e6|3006|SURICATA_EVE_PATH"
+  [mitre]="https://github.com/solomonneas/mitre-mcp.git|57d9044a4883d0e9bf3c126247ed930986144253|3007|MITRE_DATA_DIR"
+  [rapid7]="https://github.com/solomonneas/rapid7-mcp.git|a89e2da394bc7fd5cf44af2997a3b93de53b66bf|3008|RAPID7_URL,RAPID7_API_KEY"
+  [sophos]="https://github.com/solomonneas/sophos-mcp.git|90bc28aa34a424d904a4aa9e91cd367809f2740f|3009|SOPHOS_CLIENT_ID,SOPHOS_CLIENT_SECRET"
 )
 
 # Idempotency: every systemd unit active?
@@ -80,7 +83,7 @@ fi
 ENDPOINTS_JSON='[]'
 
 for name in wazuh thehive cortex misp zeek suricata mitre rapid7 sophos; do
-  IFS='|' read -r repo port env_keys <<< "${SERVERS[$name]}"
+  IFS='|' read -r repo ref port env_keys <<< "${SERVERS[$name]}"
   dest="${INSTALL_DIR}/${name}-mcp"
 
   # Token: persisted on first install, reused on idempotent re-runs
@@ -93,11 +96,9 @@ for name in wazuh thehive cortex misp zeek suricata mitre rapid7 sophos; do
     chmod 600 "${token_file}"
   fi
 
-  # Clone or update repo
+  # Clone or update repo, then check out the pinned ref
   if [[ -d "${dest}/.git" ]]; then
-    if git -C "${dest}" fetch --quiet; then
-      git -C "${dest}" reset --quiet --hard origin/HEAD || true
-    fi
+    git -C "${dest}" fetch --quiet origin || true
   else
     # Retry git clone up to 3 times
     clone_ok=0
@@ -111,6 +112,8 @@ for name in wazuh thehive cortex misp zeek suricata mitre rapid7 sophos; do
     done
     [[ "${clone_ok}" -eq 1 ]] || write_failed "git clone failed for ${repo} after 3 attempts"
   fi
+  git -C "${dest}" checkout --quiet --detach "${ref}" \
+    || write_failed "pinned ref ${ref} not found in ${repo}"
   ( cd "${dest}" && npm install --silent && (npm run build --silent 2>/dev/null || true) )
 
   # systemd unit + env file
