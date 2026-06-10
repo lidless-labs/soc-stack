@@ -50,6 +50,19 @@ setup() {
   assert_output "198.51.100.15/24"
 }
 
+@test "allocate_ip allows the last valid host octet (254)" {
+  run allocate_ip "198.51.100.250/24" 4
+  assert_success
+  assert_output "198.51.100.254/24"
+}
+
+@test "allocate_ip fails when the last octet would overflow host range" {
+  run allocate_ip "198.51.100.250/24" 5
+  assert_failure
+  run allocate_ip "198.51.100.10/24" 250
+  assert_failure
+}
+
 @test "validate_bridge accepts existing bridge" {
   MOCK_IP_LINK_SHOW="vmbr0: <BROADCAST,MULTICAST,UP,LOWER_UP>"
   MOCK_IP_LINK_EXIT="0"

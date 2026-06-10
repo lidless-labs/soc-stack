@@ -521,7 +521,11 @@ deploy_one() {
     static)
       local ip_range ip
       ip_range="$(jq -r '.network.ip_range' <<< "${manifest}")"
-      ip="$(allocate_ip "${ip_range}" "${index}")"
+      if ! ip="$(allocate_ip "${ip_range}" "${index}")"; then
+        msg_error "${component}: static IP allocation failed for ${ip_range} index ${index}"
+        state_set "${component}" status "failed"
+        return 1
+      fi
       net_config+=",ip=${ip}"
       ;;
   esac
