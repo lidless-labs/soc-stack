@@ -10,6 +10,7 @@
 - [ ] Integration assertion passes on the self-hosted Proxmox runner (if touching a component or lib)
 - [ ] No em-dashes in commit messages or files
 - [ ] No `Co-Authored-By` trailers
+- [ ] No leaked PII, secrets, real private IPs, hostnames, or `/home/<user>` paths (documentation IPs use the RFC 5737 range; real values are scrubbed)
 
 ## Related
 <!-- Closes #N, refs #N, or "n/a" -->
