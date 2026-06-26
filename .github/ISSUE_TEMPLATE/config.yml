@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Project website and tool index
+    url: https://lidless.dev/soc-stack
+    about: Overview, the wider lidless.dev SOC tooling, and where this fits.
+  - name: Security report (do not file publicly)
+    url: https://github.com/solomonneas/soc-stack/security/advisories/new
+    about: Report a vulnerability privately. See SECURITY.md. Do not open a public issue for anything that leaks a secret.
+  - name: Question or usage help
+    url: https://github.com/solomonneas/soc-stack/discussions
+    about: For setup questions and general usage, start a discussion rather than filing a bug.
