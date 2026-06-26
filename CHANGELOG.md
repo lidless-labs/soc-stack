@@ -5,6 +5,10 @@ All notable changes to soc-stack are documented in this file. Format follows [Ke
 ## [Unreleased]
 
 ### Added
+- README adoption pass: prominent website link, live CI and release badges, a keyword-rich "What it does" section, a redacted result-JSON example block, and "Why not something else?" / "What soc-stack is not" sections
+- `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1)
+- `.github/ISSUE_TEMPLATE/config.yml` (disables blank issues, routes security reports and questions off the issue tracker)
+- No-PII / no-secret-leak checkbox in the pull request template
 - TTY component picker when run locally without `--components`/`--manifest`
 - `--include-secrets-json` (result JSON redacts credentials by default) and `--mcp-bind-host` (MCP SSE binds 127.0.0.1 by default)
 - `SECURITY.md` documenting the threat model and hardening posture

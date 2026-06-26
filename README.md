@@ -5,7 +5,14 @@
 <h1 align="center">SOC Stack</h1>
 
 <p align="center">
-  <strong>One-shot Proxmox installer for a complete Security Operations Center.</strong>
+  <strong>One command on a Proxmox host builds a complete, self-hosted Security Operations Center lab in about 30 minutes.</strong>
+</p>
+
+<p align="center">
+  <a href="https://lidless.dev/soc-stack"><img src="https://img.shields.io/badge/Website-lidless.dev%2Fsoc--stack-0a0a0a?style=for-the-badge" alt="Website: lidless.dev/soc-stack"></a>
+  <a href="https://github.com/solomonneas/soc-stack/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/solomonneas/soc-stack/ci.yml?branch=main&style=for-the-badge&label=ci" alt="CI status"></a>
+  <a href="https://github.com/solomonneas/soc-stack/releases"><img src="https://img.shields.io/github/v/release/solomonneas/soc-stack?style=for-the-badge&label=release" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge" alt="MIT License"></a>
 </p>
 
 <p align="center">
@@ -17,10 +24,28 @@
   <img src="https://img.shields.io/badge/MCP-9_servers-555?style=for-the-badge" alt="MCP servers">
   <img src="https://img.shields.io/badge/Docker_Compose-stacks-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker Compose stacks">
   <img src="https://img.shields.io/badge/Bash-installers-4EAA25?style=for-the-badge&logo=gnubash&logoColor=white" alt="Bash installers">
-  <img src="https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge" alt="MIT License">
 </p>
 
-Run one command on a Proxmox host, or have an agent do it, and ~30 minutes later you have Wazuh (SIEM), TheHive + Cortex (case management + SOAR), MISP (threat intel), Zeek + Suricata (NSM + IDS), custom dashboards, and 9 MCP servers wired up and talking to each other. Non-interactive by default. Idempotent. JSON output for agents. Built for replication.
+SOC Stack is a one-command installer that stands up a full open-source Security Operations Center on a single Proxmox host: Wazuh, TheHive + Cortex, MISP, Zeek + Suricata, dashboards, and a row of MCP servers, all wired together. You want a realistic SOC to train on, test detections against, or run as a homelab, but assembling six tools by hand and integrating them eats days. It differs from a pile of per-tool guides by treating the whole stack as one declarative, idempotent, agent-friendly deploy: each tool is a self-contained LXC component, cross-component integrations wire automatically, and the entire run is non-interactive with JSON output so an AI agent can SSH in and one-shot it.
+
+**Website:** [lidless.dev/soc-stack](https://lidless.dev/soc-stack)
+
+> **Project status.** v1.0.0 is tagged and the full stack deploys and asserts green end-to-end on Proxmox VE 7.x/8.x/9.x. It is an actively developed, single-maintainer lab tool built for homelabs, training, and internal SOC replication, not a hardened multi-tenant production deployment. See [SECURITY.md](SECURITY.md) for the threat model and the [CHANGELOG](CHANGELOG.md) for what is in flight.
+
+## What it does
+
+SOC Stack is a self-hosted SOC lab builder for homelabs and security training. Run one command on a Proxmox VE host and roughly 30 minutes later you have a working Security Operations Center:
+
+- **Wazuh** for SIEM / XDR (alerting, FIM, vulnerability detection, agent management)
+- **TheHive + Cortex** for case management and SOAR (analyzers, responders, observable enrichment)
+- **MISP** for threat intelligence (IOC sharing, feeds, correlation)
+- **Zeek + Suricata** for network security monitoring and intrusion detection (NSM + IDS/IPS)
+- **Custom dashboards** (Bro Hunter + Playbook Forge) behind nginx
+- **9 MCP servers** so an AI agent can query Wazuh, TheHive, Cortex, MISP, Zeek, Suricata, MITRE ATT&CK, Rapid7, and Sophos over a single MCP config
+
+Every tool runs in its own dedicated, unprivileged LXC. The orchestrator handles VMID allocation, network setup, idempotency, secret generation, and cross-component integration wiring. The whole run is non-interactive by default and emits structured JSON, so a person or an agent can replicate the same lab on demand.
+
+Keywords: SOC lab, security operations center, Proxmox homelab, Wazuh SIEM, TheHive, Cortex SOAR, MISP threat intelligence, Suricata IDS, Zeek NSM, blue team training, detection engineering, self-hosted security, MCP servers for security tooling.
 
 ## Quick start
 
@@ -52,6 +77,14 @@ curl -sSL https://raw.githubusercontent.com/solomonneas/soc-stack/main/install.s
   --mcp-config-out /root/mcp-clients.json
 ```
 
+Prefer to read before you run? Clone the repo and execute the same orchestrator locally; the behavior is identical:
+
+```bash
+git clone https://github.com/solomonneas/soc-stack.git
+cd soc-stack
+sudo bash install.sh --components all --dry-run   # validate + plan, deploy nothing
+```
+
 After install:
 - `/root/soc-stack.json` lists every component with its LXC VMID, IP, ports, endpoints, warnings, and secret file paths. Raw passwords and API tokens are redacted by default; pass `--include-secrets-json` only when an automation workflow explicitly needs them.
 - `/root/mcp-clients.json` is a paste-ready `mcpServers` config block for Claude Desktop, OpenClaw, or any MCP client. It contains bearer tokens and is written root-only.
@@ -77,15 +110,46 @@ Each component runs in its own dedicated LXC. Components can be deployed indepen
 
 Configured automatically after all components deploy:
 
-- **Wazuh → TheHive**: Wazuh alerts at level 8+ forward to TheHive as alerts via a custom Python integration (`/var/ossec/integrations/custom-thehive.py`).
-- **TheHive ↔ Cortex**: TheHive's Cortex connector points at the local Cortex with an org-scoped API key.
-- **MISP → Suricata**: hourly cron pulls Snort/Suricata rules from MISP's `restSearch` endpoint into Suricata's update.d.
-- **Zeek → Wazuh**: Wazuh agent runs in the zeek-suricata LXC and forwards conn.log, dns.log, http.log, ssl.log, notice.log to the Wazuh manager.
-- **MCP servers ← all peers**: each MCP server's env file is populated with its corresponding tool's URL + API key from peer state.
+- **Wazuh -> TheHive**: Wazuh alerts at level 8+ forward to TheHive as alerts via a custom Python integration (`/var/ossec/integrations/custom-thehive.py`).
+- **TheHive <-> Cortex**: TheHive's Cortex connector points at the local Cortex with an org-scoped API key.
+- **MISP -> Suricata**: hourly cron pulls Snort/Suricata rules from MISP's `restSearch` endpoint into Suricata's update.d.
+- **Zeek -> Wazuh**: Wazuh agent runs in the zeek-suricata LXC and forwards conn.log, dns.log, http.log, ssl.log, notice.log to the Wazuh manager.
+- **MCP servers <- all peers**: each MCP server's env file is populated with its corresponding tool's URL + API key from peer state.
 
-## Status
+## What a finished install looks like
 
-**v1.0.0** (current, 2026-05-16): All 6 components + 5 cross-component integrations verified end-to-end on Proxmox VE. Self-hosted CI runs on every PR (shellcheck, bats, manifest validation, per-component integration matrix) and on merge to main (full-stack integration). See the [CHANGELOG](CHANGELOG.md) for full history.
+`/root/soc-stack.json` is the source of truth for what got deployed. With secrets redacted, a full-stack run reports each component, its LXC, its endpoints, and any warnings (IPs and tokens below are placeholder values from the [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) documentation range):
+
+```json
+{
+  "version": "1.0.0",
+  "preset": "minimal",
+  "status": "deployed",
+  "components": [
+    {
+      "component": "wazuh",
+      "status": "deployed",
+      "vmid": 9001,
+      "ip": "192.0.2.11",
+      "endpoints": { "dashboard": "https://192.0.2.11:443", "api": "https://192.0.2.11:55000" },
+      "credentials": { "user": "admin", "password": "REDACTED" }
+    },
+    {
+      "component": "mcp",
+      "status": "deployed",
+      "vmid": 9006,
+      "ip": "192.0.2.16",
+      "endpoints": { "wazuh_sse": "http://127.0.0.1:3001/sse", "thehive_sse": "http://127.0.0.1:3002/sse" }
+    }
+  ],
+  "integrations": [
+    { "from": "wazuh", "to": "thehive", "status": "wired" },
+    { "from": "misp", "to": "suricata", "status": "wired" }
+  ]
+}
+```
+
+The exact result-JSON schema is documented in [`docs/design/specs/2026-05-15-soc-stack-unification-design.md`](docs/design/specs/2026-05-15-soc-stack-unification-design.md).
 
 ## Agent-friendly contract
 
@@ -226,14 +290,33 @@ curl -sSL https://raw.githubusercontent.com/solomonneas/soc-stack/main/install.s
 ```
 Re-running the installer from a newer checkout is the upgrade path: already-deployed components are left alone, new components deploy, and integration re-wires. To pick up a new version of one component, destroy it and re-run with `--components <name>`. The installer never auto-updates a running component in place.
 
+## Why not something else?
+
+- **Why not install each tool by hand?** You can, and the official docs for Wazuh, TheHive, MISP, and Suricata are good. But six installs plus the integrations between them (alert forwarding, analyzer wiring, IOC feeds, log shipping) is a multi-day project that breaks the next time you rebuild. SOC Stack makes the whole thing one reproducible command.
+- **Why not a single all-in-one SIEM VM (SecurityOnion, Wazuh OVA, etc.)?** Those are excellent and purpose-built. SOC Stack is different on purpose: each tool lives in its own LXC you can scale, snapshot, or destroy independently, the components are the real upstream projects (not a fork), and the cross-tool integrations are explicit and inspectable rather than baked into one appliance.
+- **Why not Ansible or Terraform?** Nothing stops you, and a config-management rewrite is a reasonable future direction. The current design favors plain, auditable bash you can read top to bottom and a `curl | sudo bash` path an agent can drive without extra tooling on the host. State files, not a state backend, drive idempotency.
+- **Why not run it on Docker / Kubernetes directly?** Several components already use Docker Compose inside their LXC. The Proxmox LXC layer gives each tool isolation, its own IP, and snapshot/rollback at the container level, which matches how a homelab SOC is actually operated.
+
+## What soc-stack is not
+
+- **Not a hardened production SOC.** It is a lab and training tool. It assumes a trusted Proxmox host and a trusted internal bridge. Do not expose the component IPs to an untrusted network without a firewall, VLAN, and TLS termination in front. The full threat model is in [SECURITY.md](SECURITY.md).
+- **Not a managed or hosted service.** There is no SaaS, no telemetry, and no phone-home. Everything runs on hardware you control.
+- **Not a fork or a repackage of the upstream tools.** It deploys Wazuh, TheHive, Cortex, MISP, Zeek, and Suricata from their real sources at pinned versions; it does not modify them.
+- **Not an auto-updater.** The installer pins versions and never silently upgrades a running component in place; updates happen on your schedule.
+- **Not multi-host.** It targets a single Proxmox host. Multi-node is out of scope today.
+
 ## Adding a new component
 
 See [docs/adding-a-component.md](docs/adding-a-component.md) for the component contract walk-through, and [docs/design/specs/2026-05-15-soc-stack-unification-design.md](docs/design/specs/2026-05-15-soc-stack-unification-design.md) for the full design.
 
+## Contributing
+
+Contributions are welcome. New components follow a six-file contract, every lib function gets a bats test, and CI runs shellcheck plus bats on every PR. Start with [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## Security
 
-Default credentials are rotated and verified on deploy, secrets are root-only, result JSON is redacted by default, and MCP servers bind to localhost unless you say otherwise. The full threat model, what is hardened versus deliberately accepted, lives in [SECURITY.md](SECURITY.md).
+Default credentials are rotated and verified on deploy, secrets are root-only, result JSON is redacted by default, and MCP servers bind to localhost unless you say otherwise. The full threat model, what is hardened versus deliberately accepted, lives in [SECURITY.md](SECURITY.md). Found a vulnerability? Use GitHub's private vulnerability reporting on this repository.
 
 ## License
 
-MIT
+[MIT](LICENSE). Copyright (c) 2026 Solomon Neas.
