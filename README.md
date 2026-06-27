@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/soc-stack-banner.jpg" alt="SOC Stack deployment launch bay banner">
+  <img src="docs/assets/soc-stack-banner.jpg" alt="soc-stack banner" width="900">
 </p>
 
 <h1 align="center">SOC Stack</h1>
@@ -9,10 +9,13 @@
 </p>
 
 <p align="center">
-  <a href="https://lidless.dev/soc-stack"><img src="https://img.shields.io/badge/Website-lidless.dev%2Fsoc--stack-0a0a0a?style=for-the-badge" alt="Website: lidless.dev/soc-stack"></a>
-  <a href="https://github.com/solomonneas/soc-stack/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/solomonneas/soc-stack/ci.yml?branch=main&style=for-the-badge&label=ci" alt="CI status"></a>
-  <a href="https://github.com/solomonneas/soc-stack/releases"><img src="https://img.shields.io/github/v/release/solomonneas/soc-stack?style=for-the-badge&label=release" alt="Latest release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge" alt="MIT License"></a>
+  <a href="https://lidless.dev/soc-stack"><strong>lidless.dev/soc-stack</strong></a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/github/actions/workflow/status/lidless-labs/soc-stack/ci.yml?branch=main&style=for-the-badge&label=ci" alt="CI status">
+  <img src="https://img.shields.io/github/v/release/lidless-labs/soc-stack?style=for-the-badge&label=release" alt="Latest release">
+  <img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="MIT License">
 </p>
 
 <p align="center">
