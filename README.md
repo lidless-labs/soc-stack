@@ -13,20 +13,20 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/actions/workflow/status/lidless-labs/soc-stack/ci.yml?branch=main&style=for-the-badge&label=ci" alt="CI status">
-  <img src="https://img.shields.io/github/v/release/lidless-labs/soc-stack?style=for-the-badge&label=release" alt="Latest release">
-  <img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="MIT License">
+  <img src="https://shieldcn.dev/github/ci/lidless-labs/soc-stack.svg?branch=main&workflow=ci.yml" alt="CI status">
+  <img src="https://shieldcn.dev/github/release/lidless-labs/soc-stack.svg" alt="Latest release">
+  <img src="https://shieldcn.dev/badge/license-MIT-green.svg" alt="MIT License">
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Proxmox_VE-LXC-E57000?style=for-the-badge&logo=proxmox&logoColor=white" alt="Proxmox VE LXC">
-  <img src="https://img.shields.io/badge/Wazuh-SIEM%2FXDR-4DAA50?style=for-the-badge" alt="Wazuh">
-  <img src="https://img.shields.io/badge/TheHive_%2B_Cortex-Case_%2B_SOAR-f59e0b?style=for-the-badge" alt="TheHive and Cortex">
-  <img src="https://img.shields.io/badge/MISP-Threat_Intel-7c3aed?style=for-the-badge" alt="MISP">
-  <img src="https://img.shields.io/badge/Zeek_%2B_Suricata-NSM%2FIDS-2a5db0?style=for-the-badge" alt="Zeek and Suricata">
-  <img src="https://img.shields.io/badge/MCP-9_servers-555?style=for-the-badge" alt="MCP servers">
-  <img src="https://img.shields.io/badge/Docker_Compose-stacks-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker Compose stacks">
-  <img src="https://img.shields.io/badge/Bash-installers-4EAA25?style=for-the-badge&logo=gnubash&logoColor=white" alt="Bash installers">
+  <img src="https://shieldcn.dev/badge/Proxmox_VE-LXC-E57000.svg?logo=proxmox&logoColor=white" alt="Proxmox VE LXC">
+  <img src="https://shieldcn.dev/badge/Wazuh-SIEM%2FXDR-4DAA50.svg" alt="Wazuh">
+  <img src="https://shieldcn.dev/badge/TheHive_%2B_Cortex-Case_%2B_SOAR-f59e0b.svg" alt="TheHive and Cortex">
+  <img src="https://shieldcn.dev/badge/MISP-Threat_Intel-7c3aed.svg" alt="MISP">
+  <img src="https://shieldcn.dev/badge/Zeek_%2B_Suricata-NSM%2FIDS-2a5db0.svg" alt="Zeek and Suricata">
+  <img src="https://shieldcn.dev/badge/MCP-9_servers-555.svg" alt="MCP servers">
+  <img src="https://shieldcn.dev/badge/Docker_Compose-stacks-2496ED.svg?logo=docker&logoColor=white" alt="Docker Compose stacks">
+  <img src="https://shieldcn.dev/badge/Bash-installers-4EAA25.svg?logo=gnubash&logoColor=white" alt="Bash installers">
 </p>
 
 SOC Stack is a one-command installer that stands up a full open-source Security Operations Center on a single Proxmox host: Wazuh, TheHive + Cortex, MISP, Zeek + Suricata, dashboards, and a row of MCP servers, all wired together. You want a realistic SOC to train on, test detections against, or run as a homelab, but assembling six tools by hand and integrating them eats days. It differs from a pile of per-tool guides by treating the whole stack as one declarative, idempotent, agent-friendly deploy: each tool is a self-contained LXC component, cross-component integrations wire automatically, and the entire run is non-interactive with JSON output so an AI agent can SSH in and one-shot it.
