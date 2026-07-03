@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/soc-stack-banner.jpg" alt="soc-stack banner" width="900">
+  <img src="docs/assets/soc-stack-social-preview.jpg" alt="soc-stack banner" width="900">
 </p>
 
 <h1 align="center">SOC Stack</h1>
@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://lidless.dev/soc-stack"><strong>lidless.dev/soc-stack</strong></a>
+  <a href="https://lidless.dev/soc-stack"><strong>Website</strong></a> &middot; <a href="#what-it-does">What it does</a> &middot; <a href="#install">Install</a>
 </p>
 
 <p align="center">
@@ -50,7 +50,7 @@ Every tool runs in its own dedicated, unprivileged LXC. The orchestrator handles
 
 Keywords: SOC lab, security operations center, Proxmox homelab, Wazuh SIEM, TheHive, Cortex SOAR, MISP threat intelligence, Suricata IDS, Zeek NSM, blue team training, detection engineering, self-hosted security, MCP servers for security tooling.
 
-## Quick start
+## Install
 
 **Full stack** (every component, sensible defaults):
 
