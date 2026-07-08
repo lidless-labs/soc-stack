@@ -1,6 +1,17 @@
 name: CI
 
 on:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: 'Integration component to run on the soc-stack self-hosted runner'
+        required: true
+        type: choice
+        options:
+          - wazuh
+          - zeek-suricata
+          - mcp
+          - all
   pull_request:
     paths-ignore:
       - 'docs/**'
@@ -67,35 +78,26 @@ jobs:
 
   integration-component:
     name: Integration (per-component)
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.component != 'all'
     needs: [shellcheck, unit-tests, manifest-schema]
     runs-on: [self-hosted, soc-stack]
     concurrency:
       group: soc-stack-integration
       cancel-in-progress: false
-    # PR matrix covers the 3 fast components (~5-10min each on the test host).
-    # The 3 Docker-Compose-heavy components (thehive-cortex, misp, dashboards)
-    # are exercised by integration-full on merge to main, since each takes
-    # 15-30min on a constrained host and would stretch PR cycles past an hour.
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        component:
-          - wazuh
-          - zeek-suricata
-          - mcp
+    # Host integrations require a dedicated self-hosted test runner, so normal
+    # push and PR CI stays on hosted runners and these checks run on demand.
     steps:
       - uses: actions/checkout@v4
-      - name: Deploy + assert ${{ matrix.component }}
-        run: bash tests/integration/ci-helpers/boot-test-env.sh "${{ matrix.component }}"
+      - name: Deploy + assert ${{ github.event.inputs.component }}
+        run: bash tests/integration/ci-helpers/boot-test-env.sh "${{ github.event.inputs.component }}"
       - name: Tear down
         if: always()
-        run: bash tests/integration/ci-helpers/teardown-test-env.sh "${{ matrix.component }}"
+        run: bash tests/integration/ci-helpers/teardown-test-env.sh "${{ github.event.inputs.component }}"
 
   integration-full:
     name: Integration (full stack)
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: integration-component
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.component == 'all'
+    needs: [shellcheck, unit-tests, manifest-schema]
     runs-on: [self-hosted, soc-stack]
     concurrency:
       group: soc-stack-integration
