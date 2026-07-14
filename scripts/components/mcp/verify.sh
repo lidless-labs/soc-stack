@@ -20,4 +20,15 @@ done
 
 # Ports will be unreachable until integrate.sh populates env vars; skip port check here.
 
+# The nginx auth gateway fronts every endpoint and enforces the bearer token.
+# If it is down or misconfigured the endpoints are unreachable or unauthenticated.
+if ! systemctl is-enabled --quiet nginx 2>/dev/null; then
+  printf '[verify] nginx (MCP auth gateway) not enabled\n' >&2
+  fail=1
+fi
+if ! nginx -t >/dev/null 2>&1; then
+  printf '[verify] nginx config failed validation\n' >&2
+  fail=1
+fi
+
 exit "${fail}"
