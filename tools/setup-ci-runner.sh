@@ -7,7 +7,11 @@
 #      with Ubuntu 22.04, 4 GB RAM, 30 GB disk, 2 cores
 #   2. Generates an ed25519 SSH key inside the LXC
 #   3. Creates a `gh-runner` user on the Proxmox host with the LXC's public key
-#      authorized, and a sudoers entry scoped to pct, qm, pvesm, pveam only
+#      authorized, and a sudoers entry for pct/qm/pvesm/pveam PLUS bash (the CI
+#      helpers run `sudo bash <script>`), which makes the account effectively
+#      root on the host. This is only safe because CI gates the self-hosted jobs
+#      to same-repo PRs and pushes (see .github/workflows/ci.yml `if:`), so
+#      untrusted fork-PR code never runs here. Keep that guard in place.
 #   4. Installs the github-actions-runner inside the LXC
 #   5. Drops a test reaper cron on the Proxmox host
 #

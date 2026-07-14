@@ -10,12 +10,16 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Least privilege: this workflow only reads the repo. No job needs write scopes.
+permissions:
+  contents: read
+
 jobs:
   shellcheck:
     name: Shellcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install shellcheck
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
       - name: Shellcheck all bash
@@ -31,7 +35,7 @@ jobs:
     name: Bats unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
       - name: Install jq
@@ -43,7 +47,7 @@ jobs:
     name: Component manifest validation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install jq
         run: sudo apt-get install -y -qq jq
       - name: Validate every component manifest is parseable JSON (after stripping comments)
@@ -58,6 +62,11 @@ jobs:
   integration-component:
     name: Integration (per-component)
     needs: [shellcheck, unit-tests, manifest-schema]
+    # Never run untrusted fork-PR code on the self-hosted Proxmox runner: that
+    # runner can create/destroy LXCs and its account has broad sudo on the host.
+    # Only same-repo PRs (and pushes to main) reach it; fork PRs run just the
+    # sandboxed ubuntu-latest jobs above.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, soc-stack]
     concurrency:
       group: soc-stack-integration
@@ -75,7 +84,7 @@ jobs:
           - zeek-suricata
           - mcp
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Deploy + assert ${{ matrix.component }}
         run: bash tests/integration/ci-helpers/boot-test-env.sh "${{ matrix.component }}"
       - name: Tear down
@@ -91,7 +100,7 @@ jobs:
       group: soc-stack-integration
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Deploy full stack + 5 cross-component integrations
         run: bash tests/integration/ci-helpers/boot-test-env.sh all
       - name: Tear down
