@@ -66,6 +66,61 @@ setup() {
   grep -q "pct start 9001" "${MOCK_PCT_CALLS_LOG}"
 }
 
+@test "lxc_stop is a no-op when already stopped" {
+  MOCK_PCT_STATUS=stopped
+  MOCK_PCT_CALLS_LOG="${BATS_TEST_TMPDIR}/pct-calls.log"
+  export MOCK_PCT_STATUS MOCK_PCT_CALLS_LOG
+  lxc_stop 9001
+  run grep -q "pct stop 9001" "${MOCK_PCT_CALLS_LOG}"
+  assert_failure
+}
+
+@test "lxc_stop invokes pct stop when running" {
+  MOCK_PCT_STATUS=running
+  MOCK_PCT_CALLS_LOG="${BATS_TEST_TMPDIR}/pct-calls.log"
+  export MOCK_PCT_STATUS MOCK_PCT_CALLS_LOG
+  lxc_stop 9001
+  grep -q "pct stop 9001" "${MOCK_PCT_CALLS_LOG}"
+}
+
+@test "lxc_destroy is a no-op when the LXC does not exist" {
+  MOCK_PCT_EXIT=2   # pct status fails -> lxc_exists false
+  MOCK_PCT_CALLS_LOG="${BATS_TEST_TMPDIR}/pct-calls.log"
+  export MOCK_PCT_EXIT MOCK_PCT_CALLS_LOG
+  run lxc_destroy 9001
+  assert_success
+  run grep -q "pct destroy" "${MOCK_PCT_CALLS_LOG}"
+  assert_failure
+}
+
+@test "lxc_destroy stops then destroys a running LXC" {
+  MOCK_PCT_STATUS=running
+  MOCK_PCT_CALLS_LOG="${BATS_TEST_TMPDIR}/pct-calls.log"
+  export MOCK_PCT_STATUS MOCK_PCT_CALLS_LOG
+  lxc_destroy 9001
+  grep -q "pct stop 9001" "${MOCK_PCT_CALLS_LOG}"
+  grep -q "pct destroy 9001" "${MOCK_PCT_CALLS_LOG}"
+}
+
+@test "lxc_destroy destroys a stopped-but-existing LXC without stopping it" {
+  MOCK_PCT_STATUS=stopped   # pct status exits 0 (exists) but not running
+  MOCK_PCT_CALLS_LOG="${BATS_TEST_TMPDIR}/pct-calls.log"
+  export MOCK_PCT_STATUS MOCK_PCT_CALLS_LOG
+  lxc_destroy 9001
+  run grep -q "pct stop 9001" "${MOCK_PCT_CALLS_LOG}"
+  assert_failure
+  run grep -q "pct destroy 9001" "${MOCK_PCT_CALLS_LOG}"
+  assert_success
+}
+
+@test "lxc_push_script pushes the file and makes it executable" {
+  MOCK_PCT_CALLS_LOG="${BATS_TEST_TMPDIR}/pct-calls.log"
+  export MOCK_PCT_CALLS_LOG
+  lxc_push_script 9001 /tmp/local.sh /tmp/remote.sh
+  grep -q "pct push 9001 /tmp/local.sh /tmp/remote.sh" "${MOCK_PCT_CALLS_LOG}"
+  grep -q "pct exec 9001 -- chmod +x /tmp/remote.sh" "${MOCK_PCT_CALLS_LOG}"
+}
+
 @test "lxc_wait_network returns success when pct exec ping succeeds on first attempt" {
   MOCK_PCT_EXIT=0 run lxc_wait_network 9001 10
   assert_success
