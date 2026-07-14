@@ -109,7 +109,9 @@ MISP_DB_ROOT_PASS="$(get_or_create_secret misp-db-root)"
 cat > "${STACK_DIR}/docker-compose.yml" <<COMPOSE_EOF
 services:
   misp-core:
-    image: ghcr.io/misp/misp-docker/misp-core:latest
+    # Pinned by digest so a re-pushed :latest cannot silently change what runs.
+    # This digest is the :latest resolved 2026-07-14; bump deliberately.
+    image: ghcr.io/misp/misp-docker/misp-core@sha256:0eaa4e423d5cd965b7b76aa5665e81d5c05a35bc46a4ffec2ca52e0cfe627e86
     hostname: misp
     restart: unless-stopped
     ports:
@@ -161,7 +163,8 @@ services:
     restart: unless-stopped
 
   misp-modules:
-    image: ghcr.io/misp/misp-docker/misp-modules:latest
+    # Pinned digest of :latest resolved 2026-07-14; bump deliberately.
+    image: ghcr.io/misp/misp-docker/misp-modules@sha256:b3f2cc0bf25c9106e3feaaf3ba8a22507a6051a1940894169fdf4df676299ebe
     restart: unless-stopped
     depends_on:
       - misp-core
