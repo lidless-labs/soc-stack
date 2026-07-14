@@ -2,6 +2,9 @@
   <img src="docs/assets/soc-stack-social-preview.jpg" alt="soc-stack banner" width="900">
 </p>
 
+<p align="center">
+  <a href="https://lidless.dev"><img src="docs/assets/marks/soc-stack-circle.png" width="48" alt="Lidless Labs"></a>
+</p>
 <h1 align="center">SOC Stack</h1>
 
 <p align="center">
@@ -323,3 +326,11 @@ Default credentials are rotated and verified on deploy, secrets are root-only, r
 ## License
 
 [MIT](LICENSE). Copyright (c) 2026 Solomon Neas.
+
+---
+
+<p align="center"><a href="https://lidless.dev">Part of <strong>Lidless Labs</strong></a> &middot; the eye does not close</p>
+
+<p align="center"><sub><strong>Security / SOC:</strong> <a href="https://github.com/lidless-labs/wazuh-mcp">wazuh-mcp</a> &middot; <a href="https://github.com/lidless-labs/misp-mcp">misp-mcp</a> &middot; <a href="https://github.com/lidless-labs/suricata-mcp">suricata-mcp</a> &middot; <a href="https://github.com/lidless-labs/thehive-mcp">thehive-mcp</a> &middot; <a href="https://github.com/lidless-labs/cortex-mcp">cortex-mcp</a> &middot; <a href="https://github.com/lidless-labs/mitre-mcp">mitre-mcp</a> &middot; <a href="https://github.com/lidless-labs/zeek-mcp">zeek-mcp</a> &middot; <a href="https://github.com/lidless-labs/hotwash">hotwash</a></sub></p>
+
+<p align="center"><sub><a href="https://lidless.dev">All tools</a> &middot; <a href="https://github.com/lidless-labs">Lidless Labs on GitHub</a></sub></p>
