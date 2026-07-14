@@ -35,6 +35,17 @@ state_set() {
   secure_dir "$(dirname "${f}")"
   [[ -f "${f}" ]] || { echo '{}' > "${f}"; chmod 600 "${f}" 2>/dev/null || true; }
 
+  # A corrupt existing state file (e.g. a partial write from an earlier crash)
+  # would make the jq edit below fail. Without a guard, the unconditional mv
+  # then truncated the file to empty and idempotency was lost forever. Re-seed
+  # from {} so the edit proceeds and only this one update is missing, not all
+  # of the recorded state.
+  if [[ -s "${f}" ]] && ! jq -e . "${f}" >/dev/null 2>&1; then
+    msg_warn "state file ${f} was not valid JSON; reinitializing"
+    echo '{}' > "${f}"
+    chmod 600 "${f}" 2>/dev/null || true
+  fi
+
   # Try to parse value as JSON; if it fails, treat as string
   local jq_value
   if printf '%s' "${value}" | jq -e . >/dev/null 2>&1; then
@@ -43,11 +54,23 @@ state_set() {
     jq_value="$(printf '%s' "${value}" | jq -R '.')"
   fi
 
+  # Write to a temp file in the SAME directory as the target so the final mv is
+  # an atomic same-filesystem rename (mktemp under $TMPDIR could land on a
+  # different filesystem, degrading mv to a non-atomic copy+unlink). Replace the
+  # target only if jq actually succeeded; otherwise keep the old file intact.
+  # Pass the key via --arg rather than interpolating it into the jq program, so
+  # a key containing jq metacharacters cannot alter the filter.
   local tmp
-  tmp="$(mktemp)"
-  jq --argjson v "${jq_value}" "setpath(\"${key}\" | split(\".\"); \$v)" "${f}" > "${tmp}"
-  mv "${tmp}" "${f}"
-  chmod 600 "${f}" 2>/dev/null || true
+  tmp="$(mktemp "${f}.XXXXXX")"
+  if jq --argjson v "${jq_value}" --arg k "${key}" \
+       'setpath($k | split("."); $v)' "${f}" > "${tmp}"; then
+    mv "${tmp}" "${f}"
+    chmod 600 "${f}" 2>/dev/null || true
+  else
+    rm -f "${tmp}"
+    msg_error "state_set: failed to update ${f} (key=${key})"
+    return 1
+  fi
 }
 
 # state_get <component> <key>
@@ -58,7 +81,10 @@ state_get() {
   local f
   f="$(state_file "${component}")"
   [[ -f "${f}" ]] || return 0
-  jq -r "getpath(\"${key}\" | split(\".\")) // empty" "${f}"
+  # A corrupt state file must read as "empty" (and not abort a `set -e` caller
+  # such as is_completed), so swallow jq failures. Key passed via --arg to keep
+  # jq metacharacters in the key from altering the filter.
+  jq -r --arg k "${key}" 'getpath($k | split(".")) // empty' "${f}" 2>/dev/null || true
 }
 
 # component_secret_files_json <component>
@@ -90,10 +116,18 @@ component_secret_files_json() {
 
 redact_json() {
   jq '
+    # Key-name match is a heuristic; it stays broad on purpose because a new
+    # component author who names a field pw/passwd/bearer/credential should not
+    # silently leak it into the default (redacted) result JSON. See
+    # docs/adding-a-component.md for the naming contract.
+    def secret_key: test("(pass(word|phrase|wd)?|pwd|api_?key|apikey|secret|token|authorization|bearer|credential|private_?key)"; "i");
     def redact:
       if type == "object" then
         with_entries(
-          if (.key | test("(password|passphrase|api_?key|token|secret|authorization)"; "i")) then
+          # Redact a matching key only when its value is a scalar. If it holds an
+          # object/array (e.g. "credentials": {...}) keep recursing so the nested
+          # secrets are redacted by their own keys and the shape is preserved.
+          if (.key | secret_key) and ((.value | type) != "object") and ((.value | type) != "array") then
             .value = "REDACTED"
           else
             .value |= redact
@@ -101,6 +135,10 @@ redact_json() {
         )
       elif type == "array" then
         map(redact)
+      elif type == "string" then
+        # Scrub credentials embedded in a URL value (scheme://user:pass@host),
+        # which no key-name check would ever catch.
+        gsub("(?<u>://[^:/@[:space:]]+:)(?<p>[^@/[:space:]]+)(?<a>@)"; "\(.u)REDACTED\(.a)")
       else
         .
       end;

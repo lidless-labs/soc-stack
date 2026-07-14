@@ -61,3 +61,17 @@ setup() {
   run get_secret "key1"
   assert_output "new"
 }
+
+@test "gen_password succeeds under set -euo pipefail (no SIGPIPE 141 regression)" {
+  # A bare assignment from gen_password under pipefail used to abort with 141
+  # because tr takes SIGPIPE when head closes the pipe. Guard that directly.
+  run bash -c '
+    set -euo pipefail
+    source "'"${REPO_ROOT}"'/scripts/lib/logging.sh"
+    source "'"${REPO_ROOT}"'/scripts/lib/secrets.sh"
+    pw="$(gen_password 24)"
+    printf "%s" "${#pw}"
+  '
+  assert_success
+  assert_output "24"
+}

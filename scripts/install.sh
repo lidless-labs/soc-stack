@@ -88,6 +88,13 @@ EOF
 parse_args() {
   local flag
   while [[ $# -gt 0 ]]; do
+    # Accept the --flag=value form by splitting it into --flag value. Many
+    # copy-pasted `curl | bash` one-liners use `=`; without this it fell through
+    # to the unknown-flag branch and exited 2.
+    if [[ "$1" == --*=* ]]; then
+      local _k="${1%%=*}" _v="${1#*=}"
+      set -- "${_k}" "${_v}" "${@:2}"
+    fi
     case "$1" in
       --components|--preset|--bridge|--storage|--ip-mode|--ip-range|--vlan|--vmid-start|--manifest|--state-dir|--json-out|--mcp-config-out|--log-file|--mcp-bind-host)
         flag="$1"

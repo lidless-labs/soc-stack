@@ -78,6 +78,14 @@ setup() {
   [[ "${output}${stderr:-}" == *"missing value"* ]]
 }
 
+@test "parse_args accepts the --flag=value form" {
+  parse_args --components=wazuh,misp --preset=minimal --mcp-bind-host=0.0.0.0
+  [[ "${OPT_COMPONENTS}" == "wazuh,misp" ]]
+  [[ "${OPT_COMPONENTS_SET}" == "1" ]]
+  [[ "${OPT_PRESET}" == "minimal" ]]
+  [[ "${OPT_MCP_BIND_HOST}" == "0.0.0.0" ]]
+}
+
 @test "validate_options rejects invalid preset" {
   parse_args --preset tiny
   run validate_options

@@ -9,14 +9,23 @@
 # Emits an alnum + safe-special password of given length (default 24).
 # Safe chars only - no shell metacharacters that would need quoting.
 #
-# Implementation note: head closes its stdin after reading <len> bytes,
-# which causes tr to get SIGPIPE and write a "Broken pipe" error to stderr.
-# In some environments (CI in particular) that error stream interleaves with
-# the stdout capture. We discard tr's stderr to keep the output clean.
+# Implementation note: head closes its stdin after reading <len> bytes, so tr
+# takes SIGPIPE. That writes a "Broken pipe" to stderr (discarded here) AND,
+# under `set -o pipefail` (which the orchestrator sets), makes the whole
+# pipeline exit 141 even though the read succeeded. Capturing the output and
+# swallowing that expected failure with `|| true` stops a successful call from
+# aborting a `set -e` caller; the length assertion then still fails loudly if
+# /dev/urandom genuinely returned short.
 gen_password() {
   local len="${1:-24}"
   local charset='A-Za-z0-9_+=.-'
-  LC_ALL=C tr -dc "${charset}" </dev/urandom 2>/dev/null | head -c "${len}"
+  local out=""
+  out="$(LC_ALL=C tr -dc "${charset}" </dev/urandom 2>/dev/null | head -c "${len}")" || true
+  if (( ${#out} < len )); then
+    msg_error "gen_password: produced ${#out}/${len} chars from /dev/urandom"
+    return 1
+  fi
+  printf '%s' "${out}"
 }
 
 # store_secret <name> <value>

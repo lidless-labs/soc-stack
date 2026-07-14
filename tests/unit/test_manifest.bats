@@ -54,3 +54,25 @@ setup() {
   jq -e '.components[0] == "wazuh"' "${out}"
   jq -e '.preset == "standard"' "${out}"
 }
+
+@test "validate_manifest rejects a name that only substring-matches a known one" {
+  local m="${BATS_TEST_TMPDIR}/bad-cortex.json"
+  printf '%s' '{ "components": ["cortex"], "preset": "standard" }' > "${m}"
+  run validate_manifest "${m}"
+  [[ "$status" -ne 0 ]]
+  [[ "${output}${stderr:-}" == *"unknown components"* ]]
+}
+
+@test "validate_manifest rejects a regex-style component name" {
+  local m="${BATS_TEST_TMPDIR}/bad-regex.json"
+  printf '%s' '{ "components": ["m.p"], "preset": "standard" }' > "${m}"
+  run validate_manifest "${m}"
+  [[ "$status" -ne 0 ]]
+}
+
+@test "validate_manifest accepts all six known components" {
+  local m="${BATS_TEST_TMPDIR}/all.json"
+  printf '%s' '{ "components": ["wazuh","thehive-cortex","misp","zeek-suricata","dashboards","mcp"], "preset": "standard" }' > "${m}"
+  run validate_manifest "${m}"
+  assert_success
+}
