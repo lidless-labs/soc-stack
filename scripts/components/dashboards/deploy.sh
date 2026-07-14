@@ -32,9 +32,18 @@ write_failed() {
 
 trap 'write_failed "aborted on line $LINENO"' ERR
 
-# Repo + path constants
-BROHUNTER_REPO="https://github.com/solomonneas/bro-hunter.git"
-PLAYBOOKFORGE_REPO="https://github.com/solomonneas/playbook-forge.git"
+# Repo + path constants. Sources are pinned to a commit (supply-chain: a
+# compromised upstream cannot change what gets built). Bump deliberately.
+# bro-hunter was renamed to lidless-labs/vervet; the old solomonneas URL only
+# still worked via GitHub's rename redirect.
+BROHUNTER_REPO="https://github.com/lidless-labs/vervet.git"
+BROHUNTER_REF="ceb99a4f4a4292010a6a6c6f7915cadf7d2c070c"
+# playbook-forge no longer resolves at its old URL (the dashboards deploy was
+# failing to clone it). Its successor is lidless-labs/hotwash - a visual
+# IR-playbook builder with the same web/ Vite layout. VERIFY this is the
+# intended source before the next release.
+PLAYBOOKFORGE_REPO="https://github.com/lidless-labs/hotwash.git"
+PLAYBOOKFORGE_REF="162543435d75b3ca859eae41b5cf403d833fe744"
 INSTALL_DIR="/opt/s3-dashboards"
 BROHUNTER_DIR="${INSTALL_DIR}/bro-hunter"
 PLAYBOOKFORGE_DIR="${INSTALL_DIR}/playbook-forge"
@@ -81,11 +90,12 @@ mkdir -p "${INSTALL_DIR}"
 # Clone or update Bro Hunter
 if [[ -d "${BROHUNTER_DIR}/.git" ]]; then
   log "updating Bro Hunter"
-  git -C "${BROHUNTER_DIR}" pull --quiet
+  git -C "${BROHUNTER_DIR}" fetch --quiet origin
 else
   log "cloning Bro Hunter"
   git clone --quiet "${BROHUNTER_REPO}" "${BROHUNTER_DIR}"
 fi
+git -C "${BROHUNTER_DIR}" checkout --quiet --detach "${BROHUNTER_REF}"
 # Both repos keep their Vite app in web/ (root package.json lacks tsconfig)
 log "building Bro Hunter (web/ subdir)"
 cd "${BROHUNTER_DIR}/web"
@@ -96,11 +106,12 @@ npx --yes vite build --outDir dist
 # Clone or update Playbook Forge
 if [[ -d "${PLAYBOOKFORGE_DIR}/.git" ]]; then
   log "updating Playbook Forge"
-  git -C "${PLAYBOOKFORGE_DIR}" pull --quiet
+  git -C "${PLAYBOOKFORGE_DIR}" fetch --quiet origin
 else
   log "cloning Playbook Forge"
   git clone --quiet "${PLAYBOOKFORGE_REPO}" "${PLAYBOOKFORGE_DIR}"
 fi
+git -C "${PLAYBOOKFORGE_DIR}" checkout --quiet --detach "${PLAYBOOKFORGE_REF}"
 log "building Playbook Forge (web/ subdir)"
 cd "${PLAYBOOKFORGE_DIR}/web"
 npm install --silent
