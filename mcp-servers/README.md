@@ -6,6 +6,8 @@ Nine Model Context Protocol servers for AI-augmented security operations. Each s
 
 The SOC Stack installer is **self-contained**: `scripts/components/mcp/deploy.sh` clones each server at a pinned commit, builds it inside the MCP LXC, and exposes it over SSE via `mcp-proxy`, with credentials wired in automatically from peer component state. You do not need to install anything from this page when using the installer.
 
+Each SSE endpoint is fronted by an nginx gateway that requires the per-server bearer token from `/root/mcp-clients.json`; requests without it get `401`. The endpoints bind `127.0.0.1` by default (`--mcp-bind-host 0.0.0.0` to expose them on the network). The "Auth Method" column below refers to how each server authenticates to its *upstream* tool, which is separate from the SSE bearer token.
+
 The per-server repositories linked below are the same code as standalone projects: use them when you want to run a single server against an existing tool (your own Wazuh, a production TheHive) outside of SOC Stack, or to fork and customize. The environment variables documented per server apply in both cases.
 
 ## Server Overview

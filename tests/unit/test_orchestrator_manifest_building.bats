@@ -119,6 +119,24 @@ setup() {
   [[ "$(component_ordinal mcp)" == "5" ]]
 }
 
+@test "warn_if_mcp_exposed records a warning for a non-loopback mcp bind" {
+  SOC_WARNINGS=()
+  warn_if_mcp_exposed 0.0.0.0 wazuh mcp
+  [[ "$(warnings_json)" == *"non-loopback"* ]]
+}
+
+@test "warn_if_mcp_exposed is silent for a loopback bind" {
+  SOC_WARNINGS=()
+  warn_if_mcp_exposed 127.0.0.1 mcp
+  [[ "${#SOC_WARNINGS[@]}" -eq 0 ]]
+}
+
+@test "warn_if_mcp_exposed is silent when mcp is not selected" {
+  SOC_WARNINGS=()
+  warn_if_mcp_exposed 0.0.0.0 wazuh misp
+  [[ "${#SOC_WARNINGS[@]}" -eq 0 ]]
+}
+
 @test "dependency warnings are recorded for selected-only degraded mode" {
   parse_args --components mcp --state-dir "${SOC_STATE_DIR}" --log-file "${SOC_LOG_FILE}"
   source_libs

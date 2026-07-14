@@ -68,4 +68,14 @@ else
   fail "not all 9 MCP SSE ports responded within 60s grace"
 fi
 
+# Check 4: auth is enforced. The nginx gateway must reject any request that does
+# not carry the exact bearer token, so an unauthenticated request returns 401.
+# (Tokens are redacted in the result JSON, so we can only assert the reject path.)
+log "verifying the MCP auth gateway rejects unauthenticated requests"
+for port in 3001 3002 3003 3004 3005 3006 3007 3008 3009; do
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://${host_ip}:${port}/sse" 2>/dev/null || echo 000)"
+  [[ "${code}" == "401" ]] || fail "port ${port}/sse returned ${code} with no auth header, expected 401 (bearer token not enforced)"
+done
+log "all 9 endpoints reject unauthenticated requests (401)"
+
 log "PASS"

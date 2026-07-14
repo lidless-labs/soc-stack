@@ -488,6 +488,19 @@ record_warning() {
   fi
 }
 
+# warn_if_mcp_exposed <bind_host> <selected components...>
+# Exposing the MCP endpoints beyond loopback puts admin-reach tools on the
+# network. They are bearer-token gated by the nginx gateway, but a non-loopback
+# bind still widens the attack surface, so surface it loudly in the result JSON.
+warn_if_mcp_exposed() {
+  local bind="$1"; shift
+  selection_has mcp "$@" || return 0
+  case "${bind}" in
+    127.0.0.1|::1|localhost) return 0 ;;
+  esac
+  record_warning "mcp endpoints bind ${bind} (non-loopback): admin-reach tools are network-exposed; access is bearer-token gated, keep --mcp-bind-host 127.0.0.1 unless you need remote access"
+}
+
 component_available_after_plan() {
   local component="$1"; shift
   selection_has "${component}" "$@" || is_completed "${component}"
@@ -795,6 +808,8 @@ main() {
 
   msg_info "deploy plan: ${components_arr[*]}"
   plan_dependency_warnings "${components_arr[@]}"
+
+  warn_if_mcp_exposed "${OPT_MCP_BIND_HOST}" "${components_arr[@]}"
 
   local component
   local deploy_failures=0
