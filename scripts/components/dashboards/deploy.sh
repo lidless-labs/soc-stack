@@ -96,12 +96,12 @@ else
   git clone --quiet "${BROHUNTER_REPO}" "${BROHUNTER_DIR}"
 fi
 git -C "${BROHUNTER_DIR}" checkout --quiet --detach "${BROHUNTER_REF}"
-# Both repos keep their Vite app in web/ (root package.json lacks tsconfig)
-log "building Bro Hunter (web/ subdir)"
-cd "${BROHUNTER_DIR}/web"
-npm install --silent
-# Skip tsc typecheck (upstream has unused-var errors); run vite directly
-npx --yes vite build --outDir dist
+# vervet keeps package.json at the repo ROOT (its Vite app lives under web/ with
+# root:web/, outDir:dist -> web/dist). Install at root, then build via the web
+# config, skipping tsc (upstream has unused-var typecheck errors). Verified this
+# produces web/dist locally against the pinned commit.
+log "building Bro Hunter"
+( cd "${BROHUNTER_DIR}" && npm install --silent && npx --yes vite build --config web/vite.config.ts )
 
 # Clone or update Playbook Forge
 if [[ -d "${PLAYBOOKFORGE_DIR}/.git" ]]; then
@@ -112,10 +112,10 @@ else
   git clone --quiet "${PLAYBOOKFORGE_REPO}" "${PLAYBOOKFORGE_DIR}"
 fi
 git -C "${PLAYBOOKFORGE_DIR}" checkout --quiet --detach "${PLAYBOOKFORGE_REF}"
-log "building Playbook Forge (web/ subdir)"
-cd "${PLAYBOOKFORGE_DIR}/web"
-npm install --silent
-npx --yes vite build --outDir dist
+# hotwash keeps its Vite app (and package.json) under web/, building to web/dist.
+# Verified this produces web/dist locally against the pinned commit.
+log "building Playbook Forge"
+( cd "${PLAYBOOKFORGE_DIR}/web" && npm install --silent && npx --yes vite build )
 
 # Systemd unit: Bro Hunter (vite preview from web/ subdir)
 cat > /etc/systemd/system/s3-bro-hunter.service <<EOF
