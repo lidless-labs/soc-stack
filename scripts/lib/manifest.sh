@@ -28,12 +28,14 @@ validate_manifest() {
     return 1
   fi
 
-  # Each component must be a known name
-  local known="wazuh thehive-cortex misp zeek-suricata dashboards mcp"
+  # Each component must be a known name. Exact-token match via space-padding:
+  # `grep -qw` false-accepted "cortex" (word boundary inside "thehive-cortex")
+  # and treated the component name as a regex ("m.p" matched "mcp").
+  local known=" wazuh thehive-cortex misp zeek-suricata dashboards mcp "
   local bad=()
   while IFS= read -r c; do
     [[ -n "${c}" ]] || continue
-    if ! grep -qw "${c}" <<< "${known}"; then
+    if [[ "${known}" != *" ${c} "* ]]; then
       bad+=("${c}")
     fi
   done < <(jq -r '.components[]' "${file}")

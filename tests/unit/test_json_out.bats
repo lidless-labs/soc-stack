@@ -99,3 +99,42 @@ setup() {
   mode="$(stat -c "%a" "${out}")"
   [[ "${mode}" == "600" ]]
 }
+
+@test "state_set does not destroy state when the existing file is corrupt" {
+  local f="${SOC_STATE_DIR}/state/wazuh.json"
+  printf '{ this is not valid json' > "${f}"
+  run state_set wazuh status "deployed"
+  assert_success
+  jq -e . "${f}"                        # parses again
+  jq -e '.status == "deployed"' "${f}"  # the update landed
+}
+
+@test "state_get returns empty on a corrupt state file without aborting" {
+  printf '{ broken' > "${SOC_STATE_DIR}/state/wazuh.json"
+  run state_get wazuh status
+  assert_success
+  assert_output ""
+}
+
+@test "redact_json redacts broadened key names and url-embedded credentials" {
+  local input='{"pwd":"a","bearer":"b","credential":"c","passwd":"d","endpoint":"https://user:secretpass@host:9000/x","ok":"plain"}'
+  local out
+  out="$(printf '%s' "${input}" | redact_json)"
+  jq -e '.pwd == "REDACTED"'        <<< "${out}"
+  jq -e '.bearer == "REDACTED"'     <<< "${out}"
+  jq -e '.credential == "REDACTED"' <<< "${out}"
+  jq -e '.passwd == "REDACTED"'     <<< "${out}"
+  jq -e '.ok == "plain"'            <<< "${out}"
+  jq -e '.endpoint | contains("REDACTED@host")' <<< "${out}"
+  jq -e '.endpoint | contains("secretpass") | not' <<< "${out}"
+}
+
+@test "emit_final_json redacts mcp endpoint bearer tokens by default" {
+  state_set mcp status "deployed"
+  state_set mcp mcp_endpoints '[{"name":"wazuh","url":"http://127.0.0.1:9101/sse","token":"deadbeeftoken"}]'
+  local out="${BATS_TEST_TMPDIR}/result.json"
+  emit_final_json "${out}"
+  jq -e '.components[] | select(.name=="mcp") | .mcp_endpoints[0].token == "REDACTED"' "${out}"
+  run grep -q "deadbeeftoken" "${out}"
+  assert_failure
+}
