@@ -29,6 +29,8 @@ OPT_IP_RANGE=""
 # shellcheck disable=SC2034
 OPT_VLAN=""
 # shellcheck disable=SC2034
+OPT_GATEWAY=""
+# shellcheck disable=SC2034
 OPT_VMID_START="0"
 # shellcheck disable=SC2034
 OPT_MANIFEST=""
@@ -66,6 +68,7 @@ Flags:
   --storage NAME        Storage pool (default: auto-detect)
   --ip-mode MODE        dhcp|static (default: dhcp)
   --ip-range CIDR       Required if --ip-mode=static
+  --gateway IP          Default route for static mode (default: first host, x.x.x.1)
   --vlan TAG            Optional VLAN tag
   --vmid-start N        First VMID to allocate (default: next free)
   --manifest PATH       JSON manifest (alternative to flags)
@@ -96,7 +99,7 @@ parse_args() {
       set -- "${_k}" "${_v}" "${@:2}"
     fi
     case "$1" in
-      --components|--preset|--bridge|--storage|--ip-mode|--ip-range|--vlan|--vmid-start|--manifest|--state-dir|--json-out|--mcp-config-out|--log-file|--mcp-bind-host)
+      --components|--preset|--bridge|--storage|--ip-mode|--ip-range|--gateway|--vlan|--vmid-start|--manifest|--state-dir|--json-out|--mcp-config-out|--log-file|--mcp-bind-host)
         flag="$1"
         if [[ $# -lt 2 || "$2" == --* ]]; then
           printf 'missing value for %s\n' "${flag}" >&2
@@ -110,6 +113,7 @@ parse_args() {
           --storage)        OPT_STORAGE="$2" ;;
           --ip-mode)        OPT_IP_MODE="$2" ;;
           --ip-range)       OPT_IP_RANGE="$2" ;;
+          --gateway)        OPT_GATEWAY="$2" ;;
           --vlan)           OPT_VLAN="$2" ;;
           --vmid-start)     OPT_VMID_START="$2" ;;
           --manifest)       OPT_MANIFEST="$2" ;;
@@ -162,6 +166,11 @@ validate_options() {
       validation_error "invalid ip range: ${OPT_IP_RANGE}"
       return 1
     fi
+  fi
+
+  if [[ -n "${OPT_GATEWAY}" && ! "${OPT_GATEWAY}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    validation_error "invalid gateway: ${OPT_GATEWAY}"
+    return 1
   fi
 
   if [[ ! "${OPT_VMID_START}" =~ ^[0-9]+$ ]]; then
@@ -266,6 +275,21 @@ source_libs() {
 # Known components in canonical order
 COMPONENTS_KNOWN=("wazuh" "thehive-cortex" "misp" "zeek-suricata" "dashboards" "mcp")
 
+# component_ordinal <name>
+# Prints the component's fixed position in COMPONENTS_KNOWN (wazuh=0 .. mcp=5),
+# or 0 if unknown. Static IP allocation keys off this stable ordinal rather than
+# the position within the selected subset, so a given component always lands on
+# the same address regardless of which other components are selected. Keying off
+# the selection index instead made `--components misp` (index 0) collide with a
+# previously deployed wazuh (also index 0) at the same IP.
+component_ordinal() {
+  local target="$1" i
+  for i in "${!COMPONENTS_KNOWN[@]}"; do
+    [[ "${COMPONENTS_KNOWN[$i]}" == "${target}" ]] && { printf '%s' "${i}"; return 0; }
+  done
+  printf '0'
+}
+
 # expand_components <csv-or-all>
 # Echoes space-separated component names in canonical order.
 expand_components() {
@@ -312,11 +336,12 @@ validate_components_json() {
 
 validate_manifest_values() {
   local manifest="$1"
-  local preset ip_mode vmid_start ip_range vlan
+  local preset ip_mode vmid_start ip_range gateway vlan
   preset="$(jq -r '.preset // empty' <<< "${manifest}")"
   ip_mode="$(jq -r '.network.ip_mode // empty' <<< "${manifest}")"
   vmid_start="$(jq -r '.vmid_start // 0' <<< "${manifest}")"
   ip_range="$(jq -r '.network.ip_range // empty' <<< "${manifest}")"
+  gateway="$(jq -r '.network.gateway // empty' <<< "${manifest}")"
   vlan="$(jq -r '.network.vlan // empty' <<< "${manifest}")"
 
   case "${preset}" in
@@ -333,6 +358,10 @@ validate_manifest_values() {
   fi
   if [[ ! "${vmid_start}" =~ ^[0-9]+$ ]]; then
     printf 'invalid vmid_start: %s\n' "${vmid_start}" >&2
+    return 1
+  fi
+  if [[ -n "${gateway}" && ! "${gateway}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    printf 'invalid gateway: %s\n' "${gateway}" >&2
     return 1
   fi
   if [[ -n "${vlan}" ]]; then
@@ -386,6 +415,9 @@ build_manifest() {
     if [[ -n "${OPT_IP_RANGE}" ]]; then
       manifest="$(jq --arg v "${OPT_IP_RANGE}" '.network.ip_range = $v' <<< "${manifest}")"
     fi
+    if [[ -n "${OPT_GATEWAY}" ]]; then
+      manifest="$(jq --arg v "${OPT_GATEWAY}" '.network.gateway = $v' <<< "${manifest}")"
+    fi
     if [[ -n "${OPT_VLAN}" ]]; then
       manifest="$(jq --arg v "${OPT_VLAN}" '.network.vlan = $v' <<< "${manifest}")"
     fi
@@ -413,6 +445,7 @@ build_manifest() {
       --arg storage "${OPT_STORAGE}" \
       --arg ip_mode "${OPT_IP_MODE}" \
       --arg ip_range "${OPT_IP_RANGE}" \
+      --arg gateway "${OPT_GATEWAY}" \
       --arg vlan "${OPT_VLAN}" \
       --argjson vmid_start "${OPT_VMID_START}" \
       '{
@@ -423,6 +456,7 @@ build_manifest() {
           storage: (if $storage == "" then null else $storage end),
           ip_mode: $ip_mode,
           ip_range: (if $ip_range == "" then null else $ip_range end),
+          gateway: (if $gateway == "" then null else $gateway end),
           vlan: (if $vlan == "" then null else $vlan end)
         },
         vmid_start: $vmid_start
@@ -506,11 +540,13 @@ deploy_one() {
     return 0
   fi
 
-  local preset bridge storage ip_mode
+  local preset bridge storage ip_mode vlan gateway
   preset="$(jq -r '.preset' <<< "${manifest}")"
   bridge="$(jq -r '.network.bridge' <<< "${manifest}")"
   storage="$(jq -r '.network.storage // "local-lvm"' <<< "${manifest}")"
   ip_mode="$(jq -r '.network.ip_mode' <<< "${manifest}")"
+  vlan="$(jq -r '.network.vlan // empty' <<< "${manifest}")"
+  gateway="$(jq -r '.network.gateway // empty' <<< "${manifest}")"
 
   # Get a VMID
   local vmid_start vmid
@@ -526,7 +562,7 @@ deploy_one() {
   case "${ip_mode}" in
     dhcp)   net_config+=",ip=dhcp" ;;
     static)
-      local ip_range ip
+      local ip_range ip gw
       ip_range="$(jq -r '.network.ip_range' <<< "${manifest}")"
       if ! ip="$(allocate_ip "${ip_range}" "${index}")"; then
         msg_error "${component}: static IP allocation failed for ${ip_range} index ${index}"
@@ -534,8 +570,19 @@ deploy_one() {
         return 1
       fi
       net_config+=",ip=${ip}"
+      # Static containers need an explicit default route or they come up with an
+      # address but no path off-subnet; lxc_wait_network then times out pinging
+      # 8.8.8.8 and every static deploy fails. Use --gateway if given, else the
+      # first host of the range.
+      gw="${gateway:-$(default_gateway "${ip_range}")}"
+      net_config+=",gw=${gw}"
       ;;
   esac
+  # Apply the VLAN tag when set. It was validated and stored in the manifest but
+  # never reached the container config, so --vlan silently did nothing.
+  if [[ -n "${vlan}" && "${vlan}" != "null" ]]; then
+    net_config+=",tag=${vlan}"
+  fi
 
   # Get template
   local template
@@ -648,6 +695,12 @@ deploy_one() {
     state_set "${component}" "lxc.ip" "${ip}"
   fi
 
+  # Authoritatively record success on the host. Previously "deployed" came only
+  # from the component's in-LXC deploy.sh writing a status field that then had to
+  # survive the pct pull; if that file was missing or the pull raced, a
+  # successful deploy left no status=deployed and was re-deployed on every rerun.
+  state_set "${component}" status "deployed"
+
   msg_ok "${component} deployed successfully"
   return 0
 }
@@ -739,16 +792,18 @@ main() {
   plan_dependency_warnings "${components_arr[@]}"
 
   local component
-  local component_index=0
   local deploy_failures=0
   local deploy_successes=0
   for component in "${components_arr[@]}"; do
-    if deploy_one "${component}" "${manifest}" "${component_index}"; then
+    # Allocate static IPs by the component's canonical ordinal, not its position
+    # in the selected subset, so subsets and reruns are collision-free.
+    local ordinal
+    ordinal="$(component_ordinal "${component}")"
+    if deploy_one "${component}" "${manifest}" "${ordinal}"; then
       deploy_successes=$((deploy_successes + 1))
     else
       deploy_failures=$((deploy_failures + 1))
     fi
-    component_index=$((component_index + 1))
   done
 
   exit_status="$(deploy_exit_status "${deploy_failures}" "${deploy_successes}")"
