@@ -615,7 +615,7 @@ deploy_one() {
   done <<< "${spec_lines}"
 
   if [[ "${OPT_DRY_RUN}" == "1" ]]; then
-    msg_info "[dry-run] would: pct create ${vmid} ${template} --hostname s3-${component} ${pct_args[*]} --password ***"
+    msg_info "[dry-run] would: pct create ${vmid} ${template} --hostname s3-${component} ${pct_args[*]} (root password set via chpasswd after start)"
     return 0
   fi
 
@@ -624,8 +624,13 @@ deploy_one() {
   rootpw="$(gen_password 24)"
   store_secret "${component}-lxc-root" "${rootpw}"
 
-  lxc_create "${vmid}" "s3-${component}" "${template}" "${pct_args[@]}" --password "${rootpw}"
+  lxc_create "${vmid}" "s3-${component}" "${template}" "${pct_args[@]}"
   lxc_start "${vmid}"
+  # Set the container root password over stdin instead of `pct create
+  # --password`, which would expose it in the host process list
+  # (/proc/<pid>/cmdline) for the duration of the create. chpasswd reads
+  # user:password from stdin.
+  printf 'root:%s\n' "${rootpw}" | pct exec "${vmid}" -- chpasswd
   msg_info "waiting for LXC ${vmid} network"
   lxc_wait_network "${vmid}"
 

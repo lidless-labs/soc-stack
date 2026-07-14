@@ -255,11 +255,15 @@ while (( es_elapsed < 180 )); do
 done
 (( es_patch_ok )) || write_failed "cortex_6/admin ES doc did not appear within 180s"
 
-docker compose -f "${STACK_DIR}/docker-compose.yml" exec -T elasticsearch \
-  curl -sf -X POST \
-    "http://localhost:9200/cortex_6/_update/admin?routing=admin" \
-    -H "Content-Type: application/json" \
-    -d "{\"doc\":{\"password\":\"${CORTEX_PW_STORED}\",\"updatedBy\":\"wizard\",\"updatedAt\":$(date +%s)000}}" \
+# Feed the request body over stdin (printf is a shell builtin, so the password
+# never lands on any process argv / /proc cmdline) rather than curl -d "...".
+printf '{"doc":{"password":"%s","updatedBy":"wizard","updatedAt":%s000}}' \
+  "${CORTEX_PW_STORED}" "$(date +%s)" \
+  | docker compose -f "${STACK_DIR}/docker-compose.yml" exec -T elasticsearch \
+      curl -sf -X POST \
+        "http://localhost:9200/cortex_6/_update/admin?routing=admin" \
+        -H "Content-Type: application/json" \
+        --data @- \
   >/dev/null || write_failed "failed to patch Cortex admin password in Elasticsearch"
 log "Cortex admin password patched"
 
@@ -267,9 +271,9 @@ log "running Cortex first-run wizard"
 # Login, then fetch the root page to obtain the CORTEX-XSRF-TOKEN cookie.
 # Use X-CORTEX-XSRF-TOKEN header for subsequent mutating requests (per reference.conf).
 CJAR="$(mktemp)"
-curl -sf -c "${CJAR}" -H "Content-Type: application/json" \
-  -X POST "http://localhost:9001/api/login" \
-  -d "{\"user\":\"admin\",\"password\":\"${CORTEX_ADMIN_PASS}\"}" >/dev/null \
+printf '{"user":"admin","password":"%s"}' "${CORTEX_ADMIN_PASS}" \
+  | curl -sf -c "${CJAR}" -H "Content-Type: application/json" \
+      -X POST "http://localhost:9001/api/login" --data @- >/dev/null \
   || write_failed "Cortex admin login failed after password patch"
 curl -sf -c "${CJAR}" -b "${CJAR}" "http://localhost:9001/" >/dev/null 2>&1
 CSRF="$(awk '/CORTEX-XSRF-TOKEN/ {print $7}' "${CJAR}" | head -1)"
@@ -304,9 +308,9 @@ THEHIVE_ADMIN_PASS="$(get_or_create_secret thehive-admin)"
 thehive_login() {
   local pass="$1"
   local jar="$2"
-  curl -sf -c "${jar}" -H "Content-Type: application/json" \
-    -X POST "http://localhost:9000/api/v1/session" \
-    -d "{\"login\":\"admin@thehive.local\",\"password\":\"${pass}\"}" >/dev/null 2>&1
+  printf '{"login":"admin@thehive.local","password":"%s"}' "${pass}" \
+    | curl -sf -c "${jar}" -H "Content-Type: application/json" \
+        -X POST "http://localhost:9000/api/v1/session" --data @- >/dev/null 2>&1
 }
 
 TCJAR="$(mktemp)"
@@ -314,9 +318,9 @@ if thehive_login "${THEHIVE_ADMIN_PASS}" "${TCJAR}"; then
   log "TheHive admin password already rotated (previous run)"
 elif thehive_login "${THEHIVE_DEFAULT_PASS}" "${TCJAR}"; then
   # Change password (uses /password/change endpoint, NOT /user)
-  curl -sf -b "${TCJAR}" -H "Content-Type: application/json" \
-    -X POST "http://localhost:9000/api/v1/user/admin%40thehive.local/password/change" \
-    -d "{\"currentPassword\":\"${THEHIVE_DEFAULT_PASS}\",\"password\":\"${THEHIVE_ADMIN_PASS}\"}" >/dev/null \
+  printf '{"currentPassword":"%s","password":"%s"}' "${THEHIVE_DEFAULT_PASS}" "${THEHIVE_ADMIN_PASS}" \
+    | curl -sf -b "${TCJAR}" -H "Content-Type: application/json" \
+        -X POST "http://localhost:9000/api/v1/user/admin%40thehive.local/password/change" --data @- >/dev/null \
     || write_failed "TheHive admin password rotation request failed"
 
   # Verify: the new password must log in. The component is not deployed
