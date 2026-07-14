@@ -7,6 +7,19 @@ set -euo pipefail
 : "${SOC_STATE_DIR:?}"
 log() { printf '[mcp-integrate] %s\n' "$*"; }
 
+# read_env_var <file> <key>
+# Extract KEY=value from an env file WITHOUT sourcing it. Sourcing (`. file`)
+# executes arbitrary shell as root; these files hold third-party API creds and
+# should be treated as data, not code. Handles optional surrounding quotes.
+read_env_var() {
+  local file="$1" key="$2" line
+  line="$(grep -E "^[[:space:]]*${key}=" "${file}" 2>/dev/null | tail -n1 || true)"
+  line="${line#*=}"
+  line="${line%\"}"; line="${line#\"}"
+  line="${line%\'}"; line="${line#\'}"
+  printf '%s' "${line}"
+}
+
 MCP_STATE="${SOC_STATE_DIR}/state/mcp.json"
 [[ -f "${MCP_STATE}" ]] || { log "mcp state missing, skipping"; exit 0; }
 mcp_status="$(jq -r '.status // empty' "${MCP_STATE}")"
@@ -98,15 +111,15 @@ log "wired mitre-mcp"
 # --- rapid7 + sophos: only wire if user supplied creds via env on the host ---
 # These are commercial APIs; users provide creds via /etc/soc-stack/rapid7.env or sophos.env
 if [[ -f /etc/soc-stack/rapid7.env ]]; then
-  # shellcheck disable=SC1091
-  . /etc/soc-stack/rapid7.env
-  write_env rapid7 "RAPID7_URL=${RAPID7_URL:-}" "RAPID7_API_KEY=${RAPID7_API_KEY:-}"
+  write_env rapid7 \
+    "RAPID7_URL=$(read_env_var /etc/soc-stack/rapid7.env RAPID7_URL)" \
+    "RAPID7_API_KEY=$(read_env_var /etc/soc-stack/rapid7.env RAPID7_API_KEY)"
   log "wired rapid7-mcp from /etc/soc-stack/rapid7.env"
 fi
 if [[ -f /etc/soc-stack/sophos.env ]]; then
-  # shellcheck disable=SC1091
-  . /etc/soc-stack/sophos.env
-  write_env sophos "SOPHOS_CLIENT_ID=${SOPHOS_CLIENT_ID:-}" "SOPHOS_CLIENT_SECRET=${SOPHOS_CLIENT_SECRET:-}"
+  write_env sophos \
+    "SOPHOS_CLIENT_ID=$(read_env_var /etc/soc-stack/sophos.env SOPHOS_CLIENT_ID)" \
+    "SOPHOS_CLIENT_SECRET=$(read_env_var /etc/soc-stack/sophos.env SOPHOS_CLIENT_SECRET)"
   log "wired sophos-mcp from /etc/soc-stack/sophos.env"
 fi
 
