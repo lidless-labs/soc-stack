@@ -8,6 +8,12 @@ setup() {
   source_lib network
 }
 
+@test "default_gateway returns the first host of the range" {
+  run default_gateway "198.51.100.10/24"
+  assert_success
+  assert_output "198.51.100.1"
+}
+
 @test "next_vmid returns sequential starting from vmid_start" {
   MOCK_PCT_LIST=$'VMID Status Lock Name\n100 running - existing1\n101 running - existing2'
   export MOCK_PCT_LIST

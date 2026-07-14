@@ -43,6 +43,14 @@ allocate_ip() {
   printf '%s.%d/%s\n' "${base_prefix}" "${last}" "${cidr}"
 }
 
+# default_gateway <base_cidr>
+# Given "198.51.100.10/24" returns "198.51.100.1" (first host of the /24).
+# Used as the default route for static-mode containers when --gateway is unset.
+default_gateway() {
+  local base_ip="${1%/*}"
+  printf '%s.1\n' "${base_ip%.*}"
+}
+
 # validate_bridge <name>
 # Exit 0 if the bridge exists on the host; non-zero otherwise.
 validate_bridge() {

@@ -76,6 +76,49 @@ setup() {
   grep -q "ip=198.51.100.11/24" "${SOC_LOG_FILE}"
 }
 
+@test "deploy_one adds a default gateway for static mode" {
+  parse_args --components wazuh --ip-mode static --ip-range 198.51.100.10/24 \
+    --dry-run --state-dir "${SOC_STATE_DIR}" --log-file "${SOC_LOG_FILE}"
+  source_libs
+  local manifest; manifest="$(build_manifest)"
+  deploy_one wazuh "${manifest}" 0
+  grep -q "gw=198.51.100.1" "${SOC_LOG_FILE}"
+}
+
+@test "deploy_one honors an explicit --gateway for static mode" {
+  parse_args --components wazuh --ip-mode static --ip-range 198.51.100.20/24 \
+    --gateway 198.51.100.254 --dry-run --state-dir "${SOC_STATE_DIR}" --log-file "${SOC_LOG_FILE}"
+  source_libs
+  local manifest; manifest="$(build_manifest)"
+  deploy_one wazuh "${manifest}" 0
+  grep -q "gw=198.51.100.254" "${SOC_LOG_FILE}"
+}
+
+@test "deploy_one applies the VLAN tag to the container net config" {
+  parse_args --components wazuh --vlan 20 --dry-run \
+    --state-dir "${SOC_STATE_DIR}" --log-file "${SOC_LOG_FILE}"
+  source_libs
+  local manifest; manifest="$(build_manifest)"
+  deploy_one wazuh "${manifest}" 0
+  grep -q "tag=20" "${SOC_LOG_FILE}"
+}
+
+@test "static IP keys off the canonical ordinal, not the selection index" {
+  # mcp is ordinal 5, so base .10 + 5 = .15 even when it is the only selection.
+  parse_args --components mcp --ip-mode static --ip-range 198.51.100.10/24 \
+    --dry-run --state-dir "${SOC_STATE_DIR}" --log-file "${SOC_LOG_FILE}"
+  source_libs
+  local manifest; manifest="$(build_manifest)"
+  deploy_one mcp "${manifest}" "$(component_ordinal mcp)"
+  grep -q "ip=198.51.100.15/24" "${SOC_LOG_FILE}"
+}
+
+@test "component_ordinal returns fixed canonical positions" {
+  [[ "$(component_ordinal wazuh)" == "0" ]]
+  [[ "$(component_ordinal thehive-cortex)" == "1" ]]
+  [[ "$(component_ordinal mcp)" == "5" ]]
+}
+
 @test "dependency warnings are recorded for selected-only degraded mode" {
   parse_args --components mcp --state-dir "${SOC_STATE_DIR}" --log-file "${SOC_LOG_FILE}"
   source_libs
