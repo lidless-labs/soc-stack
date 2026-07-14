@@ -233,7 +233,9 @@ wait_http "http://localhost:9001/api/status" 900 "Cortex" || write_failed "Corte
 # CSRF cookie: CORTEX-XSRF-TOKEN  /  required header: X-CORTEX-XSRF-TOKEN
 log "patching Cortex admin password via Elasticsearch (auto-init workaround)"
 CORTEX_ADMIN_PASS="$(openssl rand -hex 12)"
-CORTEX_PW_SALT="s3-$(openssl rand -hex 6)"
+# Full-length random salt, no fixed prefix: a 24-bit "s3-"-prefixed salt lowered
+# offline cracking cost if the cortex_6/admin ES doc ever leaked.
+CORTEX_PW_SALT="$(openssl rand -hex 16)"
 CORTEX_PW_HASH="$(printf '%s%s' "${CORTEX_PW_SALT}" "${CORTEX_ADMIN_PASS}" | sha256sum | cut -d' ' -f1)"
 CORTEX_PW_STORED="${CORTEX_PW_SALT},${CORTEX_PW_HASH}"
 

@@ -13,9 +13,30 @@ All notable changes to soc-stack are documented in this file. Format follows [Ke
 - `--include-secrets-json` (result JSON redacts credentials by default) and `--mcp-bind-host` (MCP SSE binds 127.0.0.1 by default)
 - `SECURITY.md` documenting the threat model and hardening posture
 - `docs/adding-a-component.md` (replaces the stale `docs/adding-a-stack.md`)
-- Bats coverage for the exit-code contract, integration state tracking, and IP allocation bounds (105 unit tests)
+- Bats coverage for the exit-code contract, integration state tracking, and IP allocation bounds, plus the hardening pass (state-file safety, redaction, static/VLAN networking, flag parsing, MCP exposure warning): 123 unit tests
+- `--gateway` flag to set the default route for static-mode containers
+
+### Security
+- MCP SSE endpoints now enforce their bearer token. `mcp-proxy` has no auth of its own, so each endpoint is fronted by an nginx gateway that returns `401` unless the `Authorization` header is the exact per-server token; `mcp-proxy` binds loopback behind it. Previously the token was advertised to clients but never enforced
+- Credentials are no longer passed on a process command line during provisioning (`/proc/<pid>/cmdline` exposure): the LXC root password is set via `chpasswd` over stdin, and the TheHive/Cortex admin-credential API calls use `curl --data @-`
+- CI: the self-hosted Proxmox integration jobs are gated to same-repo PRs and pushes so fork-PR code cannot run as root on the host; `actions/checkout` pinned to a commit SHA; workflow runs with `permissions: contents: read`
+- Result-JSON redaction broadened to more key names (`pwd`, `passwd`, `bearer`, `credential`, `private_key`) and to credentials embedded in URL values
+- Cortex admin password hash uses a full-length random salt (was a 24-bit, fixed-prefix salt)
+- MCP integration parses `rapid7.env`/`sophos.env` as data instead of sourcing them as shell
+- The installer warns (in logs and the result JSON) when MCP binds a non-loopback host
+
+### Removed
+- Dead legacy installer tree `scripts/setup/**` (superseded by the `scripts/install.sh` orchestrator and `scripts/components/*`). It was excluded from the shellcheck gate and carried `verify=False` TLS-off alert forwarding, a MISP installer fetched from a mutable branch and run as root, cleartext password printing, and an allow-all firewall
 
 ### Fixed
+- `gen_password` returned exit 141 on success under `set -o pipefail` (SIGPIPE from `tr`), a latent abort for any `set -e` caller
+- `state_set` overwrote a good state file with empty content when `jq` failed (only replaces on success now); corrupt state files are tolerated instead of aborting the run, and the temp file is written in the target directory for an atomic rename
+- `--ip-mode static` now sets a default route (new `--gateway` flag, else the first host of the range); static containers previously came up with no route and failed the network wait
+- `--vlan` is now applied to the container network config; it was validated and stored but never took effect
+- Static IPs are allocated by the component's canonical ordinal, so component subsets and re-runs no longer collide on the same address
+- A successful deploy records `status=deployed` authoritatively, so it is not re-deployed on every re-run when the in-LXC state file did not survive the pull
+- `--flag=value` argument form is accepted (was rejected as an unknown flag)
+- `validate_manifest` exact-matches component names (`grep -qw` had accepted `cortex` and treated names as regexes)
 - Exit-code contract: integration failures now produce exit 4/5 as documented; `integration.status` is tracked per component
 - `allocate_ip` bounds-checks the last octet instead of emitting invalid addresses
 - TheHive/MISP default-credential rotation is verified before a component reports deployed; idempotent re-runs refuse to report deployed with missing credentials
