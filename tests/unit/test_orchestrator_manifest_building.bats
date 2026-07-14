@@ -119,6 +119,18 @@ setup() {
   [[ "$(component_ordinal mcp)" == "5" ]]
 }
 
+@test "deploy_one records status=failed when static IP allocation overflows" {
+  # base .254 + ordinal 5 = .259 > .254, so allocate_ip fails before any pct call
+  parse_args --components wazuh --ip-mode static --ip-range 198.51.100.254/24 \
+    --dry-run --state-dir "${SOC_STATE_DIR}" --log-file "${SOC_LOG_FILE}"
+  source_libs
+  local manifest; manifest="$(build_manifest)"
+  run deploy_one wazuh "${manifest}" 5
+  [[ "$status" -ne 0 ]]
+  run state_get wazuh status
+  assert_output "failed"
+}
+
 @test "warn_if_mcp_exposed records a warning for a non-loopback mcp bind" {
   SOC_WARNINGS=()
   warn_if_mcp_exposed 0.0.0.0 wazuh mcp

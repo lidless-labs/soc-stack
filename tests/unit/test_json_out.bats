@@ -138,3 +138,11 @@ setup() {
   run grep -q "deadbeeftoken" "${out}"
   assert_failure
 }
+
+@test "emit_final_json keeps mcp endpoint tokens raw when secrets are requested" {
+  state_set mcp status "deployed"
+  state_set mcp mcp_endpoints '[{"name":"wazuh","url":"http://127.0.0.1:9101/sse","token":"deadbeeftoken"}]'
+  local out="${BATS_TEST_TMPDIR}/result.json"
+  emit_final_json "${out}" 1
+  jq -e '.components[] | select(.name=="mcp") | .mcp_endpoints[0].token == "deadbeeftoken"' "${out}"
+}
