@@ -94,6 +94,7 @@ sudo bash install.sh --components all --dry-run   # validate + plan, deploy noth
 After install:
 - `/root/soc-stack.json` lists every component with its LXC VMID, IP, ports, endpoints, warnings, and secret file paths. Raw passwords and API tokens are redacted by default; pass `--include-secrets-json` only when an automation workflow explicitly needs them.
 - `/root/mcp-clients.json` is a paste-ready `mcpServers` config block for Claude Desktop, OpenClaw, or any MCP client. It contains bearer tokens and is written root-only.
+- `/root/soc-stack-navigator.json` is a MITRE ATT&CK Navigator layer describing declared detection coverage for deployed components and verified integrations. Import it at https://mitre-attack.github.io/attack-navigator/. Regenerate later with `tools/export-navigator-layer.sh` without redeploying.
 - `/var/lib/soc-stack/state/` has per-component state files used for idempotent re-runs.
 - `/var/lib/soc-stack/secrets/` has every generated credential (mode 0600, root-only) for audit recovery.
 
@@ -182,6 +183,7 @@ Designed so an AI agent can SSH into a Proxmox host and one-shot a SOC. The full
 --state-dir PATH      State directory (default: /var/lib/soc-stack)
 --json-out PATH       Result JSON path (default: /root/soc-stack.json)
 --mcp-config-out PATH MCP client config (default: /root/mcp-clients.json)
+--navigator-out PATH  ATT&CK Navigator coverage layer (default: /root/soc-stack-navigator.json)
 --log-file PATH       Install log (default: /var/log/soc-stack-install.log)
 --dry-run             Validate + plan only, no deploy
 --force               Redeploy components already marked deployed
@@ -200,7 +202,7 @@ soc-stack/
 ├── install.sh                  # repo-root wrapper for curl|bash
 ├── scripts/
 │   ├── install.sh              # orchestrator (~430 lines)
-│   ├── lib/                    # 8 shared bash modules (bats-tested)
+│   ├── lib/                    # shared bash modules (bats-tested)
 │   │   ├── logging.sh
 │   │   ├── secrets.sh
 │   │   ├── json-out.sh
@@ -208,7 +210,10 @@ soc-stack/
 │   │   ├── network.sh
 │   │   ├── manifest.sh
 │   │   ├── preflight.sh
-│   │   └── lxc.sh
+│   │   ├── lxc.sh
+│   │   ├── navigator.sh        # ATT&CK Navigator coverage layer emitter
+│   │   └── data/
+│   │       └── attack-coverage.json
 │   └── components/
 │       ├── wazuh/              # manifest.jsonc + 5 scripts per component
 │       ├── thehive-cortex/
@@ -217,13 +222,17 @@ soc-stack/
 │       ├── dashboards/
 │       └── mcp/                # 9 MCP servers + mcp-proxy SSE bridge
 ├── tests/
-│   ├── unit/                   # 105 bats tests, mocked Proxmox binaries
+│   ├── unit/                   # bats unit tests, mocked Proxmox binaries
 │   └── integration/            # per-component + cross-component assertions
 ├── docs/
 │   ├── design/specs/           # design spec (result JSON schema lives here)
 │   ├── gotchas.md
 │   ├── adding-a-component.md   # component contract walk-through
 │   └── architecture/
+├── tools/
+│   ├── export-navigator-layer.sh  # regenerate ATT&CK Navigator coverage from state
+│   ├── setup-ci-runner.sh
+│   └── soc-stack-test-reaper.sh
 ├── playbooks/                  # incident response playbooks
 ├── cases/                      # case study evidence
 └── mcp-servers/
@@ -286,7 +295,7 @@ This stops and destroys the component's LXC and removes its state file. Other co
 for comp in mcp dashboards zeek-suricata misp thehive-cortex wazuh; do
   sudo bash scripts/components/${comp}/destroy.sh
 done
-sudo rm -rf /var/lib/soc-stack /root/soc-stack.json /root/mcp-clients.json
+sudo rm -rf /var/lib/soc-stack /root/soc-stack.json /root/mcp-clients.json /root/soc-stack-navigator.json
 ```
 The final `rm` removes state, generated secrets, and the emitted JSON; skip it if you want credential recovery later.
 
