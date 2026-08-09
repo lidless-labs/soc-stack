@@ -19,6 +19,7 @@ setup() {
   [[ "${OPT_IP_MODE}" == "dhcp" ]]
   [[ "${OPT_STATE_DIR}" == "/var/lib/soc-stack" ]]
   [[ "${OPT_JSON_OUT}" == "/root/soc-stack.json" ]]
+  [[ "${OPT_NAVIGATOR_OUT}" == "/root/soc-stack-navigator.json" ]]
   [[ "${OPT_MCP_BIND_HOST}" == "127.0.0.1" ]]
 }
 
@@ -53,6 +54,11 @@ setup() {
   parse_args --include-secrets-json --mcp-bind-host 0.0.0.0
   [[ "${OPT_INCLUDE_SECRETS_JSON}" == "1" ]]
   [[ "${OPT_MCP_BIND_HOST}" == "0.0.0.0" ]]
+}
+
+@test "parse_args overrides --navigator-out" {
+  parse_args --navigator-out /tmp/attack-layer.json
+  [[ "${OPT_NAVIGATOR_OUT}" == "/tmp/attack-layer.json" ]]
 }
 
 @test "parse_args sets OPT_VMID_START" {

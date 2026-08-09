@@ -1,0 +1,122 @@
+{
+  "version": "1.0",
+  "domain": "enterprise-attack",
+  "attack_version": "17",
+  "navigator_version": "5.1.0",
+  "layer_version": "4.5",
+  "name": "SOC Stack Detection Coverage",
+  "description": "Declared detection coverage for the installed soc-stack components and verified integrations. Score is the number of contributing sources. Only deployed components and successfully integrated links contribute.",
+  "components": {
+    "wazuh": {
+      "display_name": "Wazuh",
+      "techniques": [
+        { "id": "T1003", "comment": "Credential dumping detection via rules and FIM" },
+        { "id": "T1021", "comment": "Remote services / lateral movement alerting" },
+        { "id": "T1036", "comment": "Masquerading and anomalous process naming" },
+        { "id": "T1041", "comment": "Suspicious outbound / exfil patterns in logs" },
+        { "id": "T1053", "comment": "Scheduled task and cron monitoring" },
+        { "id": "T1055", "comment": "Process injection indicators" },
+        { "id": "T1059", "comment": "Command and scripting interpreter execution" },
+        { "id": "T1070", "comment": "Indicator removal / log clearing" },
+        { "id": "T1078", "comment": "Valid account misuse and auth anomalies" },
+        { "id": "T1082", "comment": "System information discovery" },
+        { "id": "T1105", "comment": "Ingress tool transfer" },
+        { "id": "T1110", "comment": "Brute force authentication" },
+        { "id": "T1190", "comment": "Exploit of public-facing application" },
+        { "id": "T1486", "comment": "Ransomware / destructive file activity" },
+        { "id": "T1547", "comment": "Boot or logon autostart persistence" },
+        { "id": "T1548", "comment": "Abuse elevation control mechanism" },
+        { "id": "T1562", "comment": "Defense impairment (agent/service stop)" },
+        { "id": "T1566", "comment": "Phishing-related mail and endpoint signals" }
+      ]
+    },
+    "zeek-suricata": {
+      "display_name": "Zeek + Suricata",
+      "techniques": [
+        { "id": "T1018", "comment": "Remote system discovery via connection metadata" },
+        { "id": "T1021", "comment": "Remote services observed in conn/ssh logs and IDS" },
+        { "id": "T1040", "comment": "Network sniffing / SPAN visibility via NSM" },
+        { "id": "T1041", "comment": "C2 and exfil over application protocols" },
+        { "id": "T1046", "comment": "Network service scanning" },
+        { "id": "T1048", "comment": "Exfiltration over alternative protocol" },
+        { "id": "T1071", "comment": "Application-layer protocol C2 (HTTP/DNS/TLS)" },
+        { "id": "T1095", "comment": "Non-application layer protocol traffic" },
+        { "id": "T1105", "comment": "Tool transfer over the wire (files.log / fileinfo)" },
+        { "id": "T1189", "comment": "Drive-by compromise signatures" },
+        { "id": "T1190", "comment": "Exploit attempts against public services" },
+        { "id": "T1203", "comment": "Client-side exploitation signatures" },
+        { "id": "T1498", "comment": "Network denial of service" },
+        { "id": "T1571", "comment": "Non-standard port usage" },
+        { "id": "T1573", "comment": "Encrypted channel anomalies (JA3/TLS)" },
+        { "id": "T1595", "comment": "Active scanning" }
+      ]
+    },
+    "misp": {
+      "display_name": "MISP",
+      "techniques": [
+        { "id": "T1071", "comment": "IOC correlation for known C2 infrastructure" },
+        { "id": "T1102", "comment": "Web service C2 indicators from threat feeds" },
+        { "id": "T1566", "comment": "Phishing IOCs (domains, URLs, hashes)" },
+        { "id": "T1583", "comment": "Acquired infrastructure tracking via feeds" },
+        { "id": "T1584", "comment": "Compromised infrastructure indicators" }
+      ]
+    },
+    "thehive-cortex": {
+      "display_name": "TheHive + Cortex",
+      "techniques": [
+        { "id": "T1041", "comment": "Observable enrichment for exfil/C2 indicators" },
+        { "id": "T1071", "comment": "Analyzer enrichment of network observables" },
+        { "id": "T1566", "comment": "Phishing case triage and observable analysis" }
+      ]
+    }
+  },
+  "integrations": {
+    "wazuh-thehive-webhook": {
+      "display_name": "Wazuh -> TheHive webhook",
+      "from": "wazuh",
+      "to": "thehive-cortex",
+      "type": "webhook",
+      "wired_by": "wazuh",
+      "techniques": [
+        { "id": "T1059", "comment": "Alert-to-case handoff for script execution detections" },
+        { "id": "T1078", "comment": "Alert-to-case handoff for account misuse" },
+        { "id": "T1486", "comment": "Alert-to-case handoff for destructive activity" }
+      ]
+    },
+    "thehive-cortex-api": {
+      "display_name": "TheHive <-> Cortex API",
+      "from": "thehive-cortex",
+      "to": "thehive-cortex",
+      "type": "api",
+      "wired_by": "thehive-cortex",
+      "techniques": [
+        { "id": "T1071", "comment": "Automated analyzer enrichment on case observables" },
+        { "id": "T1566", "comment": "Phishing observable fan-out to Cortex analyzers" }
+      ]
+    },
+    "misp-suricata-rule-feed": {
+      "display_name": "MISP -> Suricata rule feed",
+      "from": "misp",
+      "to": "zeek-suricata",
+      "type": "rule-feed",
+      "wired_by": "zeek-suricata",
+      "techniques": [
+        { "id": "T1071", "comment": "IOC-derived Suricata rules for known C2" },
+        { "id": "T1102", "comment": "IOC-derived rules for web-service C2" },
+        { "id": "T1566", "comment": "IOC-derived rules for phishing infrastructure" }
+      ]
+    },
+    "zeek-wazuh-agent-forward": {
+      "display_name": "Zeek -> Wazuh agent forward",
+      "from": "zeek-suricata",
+      "to": "wazuh",
+      "type": "agent-forward",
+      "wired_by": "zeek-suricata",
+      "techniques": [
+        { "id": "T1046", "comment": "NSM scan evidence correlated in SIEM" },
+        { "id": "T1071", "comment": "NSM protocol metadata correlated in SIEM" },
+        { "id": "T1105", "comment": "NSM file-transfer evidence correlated in SIEM" }
+      ]
+    }
+  }
+}
