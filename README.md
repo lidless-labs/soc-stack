@@ -192,6 +192,9 @@ Designed so an AI agent can SSH into a Proxmox host and one-shot a SOC. The full
 --include-secrets-json
                        Include raw credentials in result JSON (default: redacted)
 --mcp-bind-host HOST   MCP SSE bind host (default: 127.0.0.1; use 0.0.0.0 to expose)
+--health-report       Opt-in read-only health summary after install (no deploy)
+--health-report-out PATH
+                       Health report JSON path (default: <state-dir>/health-report.json)
 --version             Print version and exit
 ```
 
@@ -212,6 +215,7 @@ soc-stack/
 │   │   ├── preflight.sh
 │   │   ├── lxc.sh
 │   │   ├── navigator.sh        # ATT&CK Navigator coverage layer emitter
+│   │   ├── health.sh           # opt-in post-install health report
 │   │   └── data/
 │   │       └── attack-coverage.json
 │   └── components/
@@ -282,6 +286,13 @@ Already-deployed components are skipped by the idempotency check, so a plain re-
 **Validate without deploying:**
 ```bash
 sudo bash install.sh --components all --dry-run
+```
+
+**Opt-in post-install health report** (read-only; re-runs each component's `verify.sh`, checks LXC state, integration status, and artifact freshness; does not deploy or integrate):
+```bash
+sudo bash install.sh --health-report
+# optional: sudo bash install.sh --health-report --components wazuh,misp
+# schedule periodically yourself (cron/systemd timer) — off by default
 ```
 
 **Remove a single component:**
