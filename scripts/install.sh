@@ -52,6 +52,9 @@ OPT_INCLUDE_SECRETS_JSON="0"
 OPT_MCP_BIND_HOST="127.0.0.1"
 # shellcheck disable=SC2034
 OPT_EARLY_EXIT=0
+# Opt-in post-install health report (issue #17). Default off.
+OPT_HEALTH_REPORT="0"
+OPT_HEALTH_REPORT_OUT=""
 SOC_WARNINGS=()
 
 usage() {
@@ -83,6 +86,9 @@ Flags:
   --include-secrets-json
                          Include raw credentials in result JSON (default: redacted)
   --mcp-bind-host HOST   MCP SSE bind host (default: 127.0.0.1; use 0.0.0.0 to expose)
+  --health-report       Opt-in read-only health summary (no deploy); JSON to stdout
+  --health-report-out PATH
+                         Health report file (default: <state-dir>/health-report.json)
   --version             Print version and exit
 EOF
 }
@@ -92,7 +98,7 @@ parse_args() {
   local flag
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --components|--preset|--bridge|--storage|--ip-mode|--ip-range|--vlan|--vmid-start|--manifest|--state-dir|--json-out|--mcp-config-out|--navigator-out|--log-file|--mcp-bind-host)
+      --components|--preset|--bridge|--storage|--ip-mode|--ip-range|--vlan|--vmid-start|--manifest|--state-dir|--json-out|--mcp-config-out|--navigator-out|--log-file|--mcp-bind-host|--health-report-out)
         flag="$1"
         if [[ $# -lt 2 || "$2" == --* ]]; then
           printf 'missing value for %s\n' "${flag}" >&2
@@ -115,6 +121,7 @@ parse_args() {
           --navigator-out)  OPT_NAVIGATOR_OUT="$2" ;;
           --log-file)       OPT_LOG_FILE="$2" ;;
           --mcp-bind-host)  OPT_MCP_BIND_HOST="$2" ;;
+          --health-report-out) OPT_HEALTH_REPORT_OUT="$2" ;;
         esac
         shift 2
         ;;
@@ -123,6 +130,7 @@ parse_args() {
       --no-integrate)      OPT_NO_INTEGRATE="1"; shift ;;
       --non-interactive)   OPT_NON_INTERACTIVE="1"; shift ;;
       --include-secrets-json) OPT_INCLUDE_SECRETS_JSON="1"; shift ;;
+      --health-report)     OPT_HEALTH_REPORT="1"; shift ;;
       --version)           printf 'soc-stack v%s\n' "${SOC_STACK_VERSION}"; OPT_EARLY_EXIT=1; return 0 ;;
       --help|-h)           usage; OPT_EARLY_EXIT=1; return 0 ;;
       *) printf 'unknown flag: %s\n' "$1" >&2; usage >&2; return 1 ;;
@@ -259,6 +267,7 @@ source_libs() {
   source "${LIB_DIR}/lxc.sh"
   source "${LIB_DIR}/manifest.sh"
   source "${LIB_DIR}/navigator.sh"
+  source "${LIB_DIR}/health.sh"
 }
 
 # Known components in canonical order
@@ -701,6 +710,15 @@ integrate_all() {
 main() {
   parse_args "$@" || return 2
   [[ "${OPT_EARLY_EXIT}" == "1" ]] && return 0
+
+  # Opt-in health report: read-only path, skips deploy/integrate entirely.
+  if [[ "${OPT_HEALTH_REPORT}" == "1" ]]; then
+    source_libs
+    check_root || return 1
+    run_health_report
+    return $?
+  fi
+
   validate_options || return 2
   maybe_pick_components || return 2
   source_libs

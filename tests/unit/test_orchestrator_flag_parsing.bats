@@ -98,6 +98,28 @@ setup() {
   [[ "${output}${stderr:-}" == *"--ip-range"* ]]
 }
 
+@test "parse_args sets OPT_HEALTH_REPORT=1 when --health-report is passed" {
+  parse_args --health-report
+  [[ "${OPT_HEALTH_REPORT}" == "1" ]]
+}
+
+@test "parse_args sets OPT_HEALTH_REPORT_OUT" {
+  parse_args --health-report --health-report-out /tmp/health.json
+  [[ "${OPT_HEALTH_REPORT}" == "1" ]]
+  [[ "${OPT_HEALTH_REPORT_OUT}" == "/tmp/health.json" ]]
+}
+
+@test "parse_args defaults OPT_HEALTH_REPORT to 0" {
+  parse_args
+  [[ "${OPT_HEALTH_REPORT}" == "0" ]]
+}
+
+@test "parse_args fails on missing --health-report-out value" {
+  run parse_args --health-report-out
+  [[ "$status" -ne 0 ]]
+  [[ "${output}${stderr:-}" == *"missing value"* ]]
+}
+
 @test "interactive picker toggles selected components when tty is forced" {
   export SOC_TEST_FORCE_TTY=1
   OPT_NON_INTERACTIVE="0"

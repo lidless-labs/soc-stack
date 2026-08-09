@@ -82,6 +82,8 @@ curl -sSL .../install.sh | sudo bash -s -- --manifest /root/soc-stack-manifest.j
 | `--force` | - | redeploy even if state shows complete |
 | `--no-integrate` | - | skip cross-component wiring |
 | `--non-interactive` | auto when stdin not a tty | hard-fail on any prompt |
+| `--health-report` | - | opt-in read-only health summary; JSON to stdout; no deploy |
+| `--health-report-out` | `<state-dir>/health-report.json` | health report output path |
 | `--version` | - | print version and exit |
 
 ### Orchestration sequence

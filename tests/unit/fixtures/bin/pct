@@ -5,6 +5,8 @@
 #   MOCK_PCT_LIST      - what `pct list` prints
 #   MOCK_PCT_EXEC      - what `pct exec <vmid> -- <cmd>` prints
 #   MOCK_PCT_EXIT      - exit code for `pct create`, `pct start`, etc. (default 0)
+#   MOCK_PCT_EXEC_EXIT - exit code for `pct exec` (default: MOCK_PCT_EXIT)
+#   MOCK_PCT_VERIFY_EXIT - exit code when exec runs a health/verify script (default: MOCK_PCT_EXEC_EXIT)
 #   MOCK_PCT_CALLS_LOG - file to append call log (default $BATS_TEST_TMPDIR/pct-calls.log)
 
 CALLS_LOG="${MOCK_PCT_CALLS_LOG:-${BATS_TEST_TMPDIR:-/tmp}/pct-calls.log}"
@@ -23,6 +25,15 @@ case "$1" in
     ;;
   exec)
     printf '%s\n' "${MOCK_PCT_EXEC:-}"
+    # pct exec <vmid> -- <cmd...>
+    shift 2 || true
+    [[ "${1:-}" == "--" ]] && shift
+    local_cmd="$*"
+    # Only the verify script invocation (bash ...verify...), not chmod of that path
+    if [[ "${local_cmd}" == bash\ *verify* ]]; then
+      exit "${MOCK_PCT_VERIFY_EXIT:-${MOCK_PCT_EXEC_EXIT:-${MOCK_PCT_EXIT:-0}}}"
+    fi
+    exit "${MOCK_PCT_EXEC_EXIT:-${MOCK_PCT_EXIT:-0}}"
     ;;
   create|start|stop|destroy|push|set)
     : # accept silently
