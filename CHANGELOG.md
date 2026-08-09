@@ -6,6 +6,7 @@ All notable changes to soc-stack are documented in this file. Format follows [Ke
 
 ### Added
 - ATT&CK Navigator coverage layer export: `scripts/lib/navigator.sh` + declarative map in `scripts/lib/data/attack-coverage.json`, written after install to `--navigator-out` (default `/root/soc-stack-navigator.json`); offline regenerator `tools/export-navigator-layer.sh`. Only deployed components and successfully integrated links contribute techniques.
+- `docs/archive/operations/operator-report-2026-06.md` and `operator-report-reconciliation-2026-08.md` (close stale June operator-center snapshot; [#18](https://github.com/lidless-labs/soc-stack/issues/18))
 - README adoption pass: prominent website link, live CI and release badges, a keyword-rich "What it does" section, a redacted result-JSON example block, and "Why not something else?" / "What soc-stack is not" sections
 - `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1)
 - `.github/ISSUE_TEMPLATE/config.yml` (disables blank issues, routes security reports and questions off the issue tracker)

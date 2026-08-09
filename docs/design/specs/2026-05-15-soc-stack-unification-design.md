@@ -1,7 +1,7 @@
 # SOC Stack Unification Design
 
 **Date:** 2026-05-15
-**Status:** Draft - pending implementation plan
+**Status:** Historical. v1.0.0 shipped the component orchestrator; the target tree below is aspirational. For what remains open vs closed, see [docs/archive/operations/operator-report-reconciliation-2026-08.md](../../archive/operations/operator-report-reconciliation-2026-08.md) ([#18](https://github.com/lidless-labs/soc-stack/issues/18)).
 **Authors:** Solomon Neas
 
 ## Context
