@@ -38,6 +38,8 @@ OPT_STATE_DIR="/var/lib/soc-stack"
 OPT_JSON_OUT="/root/soc-stack.json"
 # shellcheck disable=SC2034
 OPT_MCP_CONFIG_OUT="/root/mcp-clients.json"
+# shellcheck disable=SC2034
+OPT_NAVIGATOR_OUT="/root/soc-stack-navigator.json"
 OPT_LOG_FILE="/var/log/soc-stack-install.log"
 # shellcheck disable=SC2034
 OPT_DRY_RUN="0"
@@ -72,6 +74,7 @@ Flags:
   --state-dir PATH      State directory (default: /var/lib/soc-stack)
   --json-out PATH       Result JSON (default: /root/soc-stack.json)
   --mcp-config-out PATH MCP client config (default: /root/mcp-clients.json)
+  --navigator-out PATH  ATT&CK Navigator coverage layer (default: /root/soc-stack-navigator.json)
   --log-file PATH       Log file (default: /var/log/soc-stack-install.log)
   --dry-run             Validate + plan, do not deploy
   --force               Redeploy even if state shows complete
@@ -89,7 +92,7 @@ parse_args() {
   local flag
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --components|--preset|--bridge|--storage|--ip-mode|--ip-range|--vlan|--vmid-start|--manifest|--state-dir|--json-out|--mcp-config-out|--log-file|--mcp-bind-host)
+      --components|--preset|--bridge|--storage|--ip-mode|--ip-range|--vlan|--vmid-start|--manifest|--state-dir|--json-out|--mcp-config-out|--navigator-out|--log-file|--mcp-bind-host)
         flag="$1"
         if [[ $# -lt 2 || "$2" == --* ]]; then
           printf 'missing value for %s\n' "${flag}" >&2
@@ -109,6 +112,7 @@ parse_args() {
           --state-dir)      OPT_STATE_DIR="$2" ;;
           --json-out)       OPT_JSON_OUT="$2" ;;
           --mcp-config-out) OPT_MCP_CONFIG_OUT="$2" ;;
+          --navigator-out)  OPT_NAVIGATOR_OUT="$2" ;;
           --log-file)       OPT_LOG_FILE="$2" ;;
           --mcp-bind-host)  OPT_MCP_BIND_HOST="$2" ;;
         esac
@@ -254,6 +258,7 @@ source_libs() {
   source "${LIB_DIR}/preflight.sh"
   source "${LIB_DIR}/lxc.sh"
   source "${LIB_DIR}/manifest.sh"
+  source "${LIB_DIR}/navigator.sh"
 }
 
 # Known components in canonical order
@@ -768,6 +773,11 @@ main() {
 
   emit_mcp_config "${OPT_MCP_CONFIG_OUT}"
   msg_ok "MCP client config written to ${OPT_MCP_CONFIG_OUT}"
+
+  if [[ -n "${OPT_NAVIGATOR_OUT}" ]]; then
+    emit_navigator_layer "${OPT_NAVIGATOR_OUT}"
+    msg_ok "ATT&CK Navigator layer written to ${OPT_NAVIGATOR_OUT}"
+  fi
 
   return "${exit_status}"
 }
