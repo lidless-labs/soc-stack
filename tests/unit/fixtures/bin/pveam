@@ -1,10 +1,54 @@
 #!/usr/bin/env bash
+# Mock pveam for unit tests.
+set -euo pipefail
+
+# Env knobs:
+#   MOCK_PVEAM_CALLS_LOG      where calls are appended
+#   MOCK_PVEAM_LIST           output of `pveam list <storage>` (non-local)
+#   MOCK_PVEAM_LIST_LOCAL     output of `pveam list local`
+#   MOCK_PVEAM_AVAILABLE      output of `pveam available`
+#   MOCK_PVEAM_UPDATE_EXIT    exit code of `pveam update`
+#   MOCK_PVEAM_DOWNLOAD_EXIT  exit code of `pveam download`
+#   MOCK_PVEAM_EXIT           fallback exit code
+#   MOCK_PVEAM_DOWNLOAD_DIR   dir recording successfully downloaded archives
+#   MOCK_PVEAM_POST_DOWNLOAD_TAIL_LINES
+#                              filler lines emitted after downloaded archives
 CALLS_LOG="${MOCK_PVEAM_CALLS_LOG:-${BATS_TEST_TMPDIR:-/tmp}/pveam-calls.log}"
 echo "pveam $*" >> "$CALLS_LOG"
 case "$1" in
-  list)     printf '%s\n' "${MOCK_PVEAM_LIST:-local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst}" ;;
-  update)   : ;;
-  download) : ;;
-  *)        : ;;
+  list)
+    if [[ "$2" == "local" && "${MOCK_PVEAM_LIST_LOCAL+set}" == "set" ]]; then
+      printf '%s\n' "${MOCK_PVEAM_LIST_LOCAL}"
+    else
+      printf '%s\n' "${MOCK_PVEAM_LIST-local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst}"
+    fi
+    if [[ -n "${MOCK_PVEAM_DOWNLOAD_DIR:-}" && -f "${MOCK_PVEAM_DOWNLOAD_DIR}/downloaded.txt" ]]; then
+      while IFS= read -r a; do printf 'local:vztmpl/%s\n' "${a}"; done < "${MOCK_PVEAM_DOWNLOAD_DIR}/downloaded.txt"
+      if [[ "${MOCK_PVEAM_POST_DOWNLOAD_TAIL_LINES:-0}" -gt 0 ]]; then
+        seq 1 "${MOCK_PVEAM_POST_DOWNLOAD_TAIL_LINES}" | sed 's#^#local:vztmpl/filler-#; s#$#.tar.zst#'
+      fi
+    fi
+    ;;
+  update)
+    if [[ "${MOCK_PVEAM_UPDATE_EXIT:-0}" != "0" ]]; then
+      echo "mock pveam update failure" >&2
+      exit "${MOCK_PVEAM_UPDATE_EXIT}"
+    fi
+    ;;
+  available)
+    if [[ "${MOCK_PVEAM_AVAILABLE+set}" == "set" ]]; then
+      printf '%s\n' "${MOCK_PVEAM_AVAILABLE}"
+    fi
+    ;;
+  download)
+    if [[ "${MOCK_PVEAM_DOWNLOAD_EXIT:-0}" != "0" ]]; then
+      echo "mock pveam download failure for $2" >&2
+      exit "${MOCK_PVEAM_DOWNLOAD_EXIT}"
+    fi
+    if [[ -n "${MOCK_PVEAM_DOWNLOAD_DIR:-}" ]]; then
+      mkdir -p "${MOCK_PVEAM_DOWNLOAD_DIR}"
+      echo "$3" >> "${MOCK_PVEAM_DOWNLOAD_DIR}/downloaded.txt"
+    fi
+    ;;
 esac
 exit "${MOCK_PVEAM_EXIT:-0}"

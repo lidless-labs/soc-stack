@@ -491,6 +491,22 @@ plan_dependency_warnings() {
   fi
 }
 
+# plan_requires_template <component>...
+# A completed component is skipped by deploy_one unless --force is active, so
+# idempotent reruns must not require the old template archive to remain present.
+plan_requires_template() {
+  local component
+  if [[ "${OPT_FORCE}" == "1" ]]; then
+    return 0
+  fi
+  for component in "$@"; do
+    if ! is_completed "${component}"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 warnings_json() {
   if [[ ${#SOC_WARNINGS[@]} -eq 0 ]]; then
     printf '[]'
@@ -544,17 +560,12 @@ deploy_one() {
       ;;
   esac
 
-  # Get template
+  # Get template (issue #7: never continue with a nonexistent template)
   local template
-  template="$(pveam list "${storage}" 2>/dev/null | awk '/ubuntu-22.04/{print $1; exit}')"
-  if [[ -z "${template}" ]]; then
-    template="$(pveam list local 2>/dev/null | awk '/ubuntu-22.04/{print $1; exit}')"
-  fi
-  if [[ -z "${template}" ]]; then
-    msg_info "downloading Ubuntu 22.04 template"
-    pveam update >/dev/null 2>&1 || true
-    pveam download local ubuntu-22.04-standard_22.04-1_amd64.tar.zst >/dev/null 2>&1 || true
-    template="local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
+  if ! template="$(ensure_ubuntu_template "${storage}")"; then
+    msg_error "${component}: no usable Ubuntu container template; aborting"
+    state_set "${component}" status "failed"
+    return 1
   fi
 
   # Get LXC spec from component
@@ -753,6 +764,20 @@ main() {
 
   msg_info "deploy plan: ${components_arr[*]}"
   plan_dependency_warnings "${components_arr[@]}"
+
+  # Fail fast (issue #7) before provisioning starts, but preserve idempotent
+  # reruns when every selected component will be skipped as already deployed.
+  if plan_requires_template "${components_arr[@]}"; then
+    local u_storage
+    if ! u_storage="$(jq -er '(.network.storage // "local-lvm") | select(type == "string" and length > 0)' <<< "${manifest}")"; then
+      msg_error "aborting before deployment: manifest has no usable storage target"
+      return 1
+    fi
+    if ! ensure_ubuntu_template "${u_storage}" >/dev/null; then
+      msg_error "aborting before deployment: no usable Ubuntu container template for storage '${u_storage}'"
+      return 1
+    fi
+  fi
 
   local component
   local component_index=0
