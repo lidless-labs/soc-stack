@@ -84,8 +84,9 @@ case "$1" in
       esac
     done ;;
   --fsys-tarfile)
+    [[ "$(cat "${MOCKDIR}/tar_mode" 2>/dev/null)" == hang ]] && exec sleep 30
     d="$(mktemp -d "${MOCKDIR}/tree.XXXXXX")"
-    mkdir -p "${d}/usr/bin"
+    mkdir -p "${d}/usr/bin" "${d}/bin"
     mode="$(cat "${MOCKDIR}/tar_mode" 2>/dev/null || echo regular)"
     case "${mode}" in
       regular) cp "${MOCKDIR}/extract_content" "${d}/usr/bin/chsh"; members=(./usr/bin/chsh) ;;
@@ -98,6 +99,10 @@ case "$1" in
       dup)
         cp "${MOCKDIR}/extract_content" "${d}/usr/bin/chsh"
         members=(./usr/bin/chsh ./usr/bin/chsh) ;;
+      many)
+        cp "${MOCKDIR}/extract_content" "${d}/usr/bin/chsh"
+        members=(./usr/bin/chsh ./usr/bin/chsh ./usr/bin/chsh ./usr/bin/chsh ./usr/bin/chsh) ;;
+      aliased) cp "${MOCKDIR}/extract_content" "${d}/bin/chsh"; members=(./bin/chsh) ;;
     esac
     tar -cf - -C "${d}" "${members[@]}"
     rm -rf "${d}" ;;
@@ -107,15 +112,17 @@ MOCK
   chmod +x "${MOCKBIN}/ssh" "${MOCKBIN}/curl" "${MOCKBIN}/dpkg-deb"
 }
 
-write_ownership() { # <live sha>
+write_ownership() { # <live sha> [owner path] [live size]
   cat >"${MOCKDIR}/resp_ownership" <<EOF
 @@resolved
 /usr/bin/chsh
 @@owner
-passwd: /usr/bin/chsh
+passwd: ${2:-/usr/bin/chsh}
 @@divert
 truename=/usr/bin/chsh
 listpackage=
+@@size
+${3:-15}
 @@sha256
 $1
 @@end
@@ -144,16 +151,18 @@ passwd:
 EOF
 }
 
-write_outside() { # <sha>
+write_outside() { # <sha> [stat size] [bytes read]
   cat >"${MOCKDIR}/resp_outside" <<EOF
 @@kind
 block
 @@type
 regular
 @@size
-15
+${2:-15}
 @@sha256
 $1
+@@bytes
+${3:-${2:-15}}
 @@end
 EOF
 }
@@ -226,6 +235,8 @@ EOF
 @@divert
 truename=/usr/bin/chsh
 listpackage=
+@@size
+15
 @@sha256
 ${PKG_SHA}
 @@end
@@ -491,7 +502,7 @@ hostile_divert() {
   # first line carries Markdown/HTML metacharacters and a CR; later lines
   # try to forge table rows (only the first line of a section is used).
   printf '@@resolved\n/usr/bin/chsh\n@@owner\npasswd: /usr/bin/chsh\n@@divert\ntruename=/usr/bin/chsh\n' >"${MOCKDIR}/resp_ownership"
-  printf 'listpackage=evil|`pkg`**bold**[x](http://e.example)<img src=x>\r\033[31m\n| injected | row |\n@@sha256\n%s\n@@end\n' "${PKG_SHA}" >>"${MOCKDIR}/resp_ownership"
+  printf 'listpackage=evil|`pkg`**bold**[x](http://e.example)<img src=x>\r\033[31m\n| injected | row |\n@@size\n15\n@@sha256\n%s\n@@end\n' "${PKG_SHA}" >>"${MOCKDIR}/resp_ownership"
 }
 
 @test "markdown: hostile target text is escaped, control chars stripped, no forged rows" {
@@ -535,4 +546,166 @@ hostile_divert() {
   jq -e . <<<"${output}" >/dev/null
   [[ "$(jq -r .reason <<<"${output}")" == *'evil|`pkg`**bold**'* ]]
   [[ "$(jq -r .verdict <<<"${output}")" == "package-unknown" ]]
+}
+
+# ---- second review round (Opus + Daybreak re-review of e7c30ac) ----
+
+reason_of() { jq -r .reason <<<"${output}"; }
+
+@test "outside returns the empty-input hash for a non-empty file (failed debugfs read): error, exit 3" {
+  write_outside e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 15 0
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 3 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
+  [[ "$(reason_of)" == *"incomplete"* ]]
+  [[ "$(jq -r .sha256_outside <<<"${output}")" == "null" ]]
+}
+
+@test "outside byte count differs from the stat size: error, exit 3" {
+  write_outside "${PKG_SHA}" 15 7
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 3 ]]
+  [[ "$(reason_of)" == *"read 7 bytes"* ]]
+}
+
+@test "outside script runs under bash with pipefail and reports a failed read as @@error" {
+  run grep -F 'set -o pipefail' "${TOOL}"
+  assert_success
+  run grep -F 'bash -s --' "${TOOL}"
+  assert_success
+  run grep -F '@@bytes' "${TOOL}"
+  assert_success
+}
+
+@test "empty-input hash on the live file with a non-empty size is an error, exit 3" {
+  write_ownership e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 /usr/bin/chsh 15
+  run "${TOOL}" --host target1 --path /usr/bin/chsh
+  [[ "${status}" -eq 3 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
+  [[ ! -s "${MOCKDIR}/curl.log" ]]
+}
+
+@test "inside size differing from the package size while hashes agree is an error, exit 3" {
+  write_ownership "${PKG_SHA}" /usr/bin/chsh 99
+  run "${TOOL}" --host target1 --path /usr/bin/chsh
+  [[ "${status}" -eq 3 ]]
+  [[ "$(reason_of)" == *"size"* ]]
+}
+
+@test "inside mismatch is reported even when the outside ssh fails: exit 1, reason recorded" {
+  write_ownership "$(sha_of tampered)"
+  : >"${MOCKDIR}/ssh_fail_outside"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 1 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "mismatch" ]]
+  [[ "$(reason_of)" == *"outside view also failed"* ]]
+  [[ "$(jq -r .sha256_outside_reason <<<"${output}")" == *"unavailable"* ]]
+}
+
+@test "inside mismatch is reported even when the outside file is not regular: exit 1" {
+  write_ownership "$(sha_of tampered)"
+  sed -i 's/^regular$/symlink/' "${MOCKDIR}/resp_outside"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 1 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "mismatch" ]]
+}
+
+@test "usrmerge alias: dpkg registers /bin/chsh, canonical /usr/bin/chsh is verified" {
+  write_ownership "${PKG_SHA}" /bin/chsh
+  echo aliased >"${MOCKDIR}/tar_mode"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  assert_success
+  [[ "$(jq -r .verdict <<<"${output}")" == "match" ]]
+  [[ "$(jq -r .dpkg_path <<<"${output}")" == "/bin/chsh" ]]
+  [[ "$(jq -r .resolved_path <<<"${output}")" == "/usr/bin/chsh" ]]
+  # the outside view still reads the canonical path
+  grep -Eq 'sh -s -- 123 /usr/bin/chsh$' "${MOCKDIR}/ssh.log"
+}
+
+@test "usrmerge alias: dpkg path that is neither the path nor its alias is an error, exit 3" {
+  write_ownership "${PKG_SHA}" /usr/bin/other
+  run "${TOOL}" --host target1 --path /usr/bin/chsh
+  [[ "${status}" -eq 3 ]]
+  [[ "$(reason_of)" == *"unrelated path"* ]]
+  [[ ! -s "${MOCKDIR}/curl.log" ]]
+}
+
+@test "download network failure (000) and server errors (5xx) are errors; 404 stays package-unknown" {
+  echo 503 >"${MOCKDIR}/pool_code"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh
+  [[ "${status}" -eq 3 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
+  echo 000 >"${MOCKDIR}/pool_code"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh
+  [[ "${status}" -eq 3 ]]
+  echo 404 >"${MOCKDIR}/pool_code"
+  rm "${MOCKBIN}/curl"
+  cat >"${MOCKBIN}/curl" <<'MOCK'
+#!/usr/bin/env bash
+printf '404'
+MOCK
+  chmod +x "${MOCKBIN}/curl"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh
+  [[ "${status}" -eq 2 ]]
+}
+
+@test "snapshot lookup server error is an error, not package-unknown" {
+  echo 404 >"${MOCKDIR}/pool_code"
+  cat >"${MOCKBIN}/curl" <<'MOCK'
+#!/usr/bin/env bash
+case "$*" in *snapshot.debian.org*) printf '503' ;; *) printf '404' ;; esac
+MOCK
+  run "${TOOL}" --host target1 --path /usr/bin/chsh
+  [[ "${status}" -eq 3 ]]
+  [[ "$(reason_of)" == *"snapshot.debian.org lookup failed"* ]]
+}
+
+@test "missing dependency exits 3 with a message before any jq output" {
+  local nojq="${BATS_TEST_TMPDIR}/nojq" c
+  mkdir -p "${nojq}"
+  for c in bash curl dpkg-deb tar ssh sha256sum timeout; do
+    ln -s "$(command -v "${c}")" "${nojq}/${c}"
+  done
+  run env PATH="${nojq}" "$(command -v bash)" "${TOOL}" --host target1 --path /usr/bin/chsh
+  [[ "${status}" -eq 3 ]]
+  [[ "${output}" == *"missing required command(s): jq"* ]]
+  [[ ! -e "${MOCKDIR}/ssh.log" ]]
+}
+
+@test "more than two matching members: stops after two and is an error, exit 3" {
+  echo many >"${MOCKDIR}/tar_mode"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 3 ]]
+  [[ "$(reason_of)" == *"more than one entry"* ]]
+}
+
+@test "decoder timeout yields error, exit 3 (decompression-bomb guard)" {
+  echo hang >"${MOCKDIR}/tar_mode"
+  PV_DECODER_TIMEOUT=1 run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 3 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
+  [[ "$(reason_of)" == *"could not list"* ]]
+}
+
+@test "oversized control-field output is an error, exit 3" {
+  printf 'x%.0s' $(seq 1 5000) >"${MOCKDIR}/ctrl_pkg"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh
+  [[ "${status}" -eq 3 ]]
+  [[ "$(reason_of)" == *"oversized"* ]]
+}
+
+@test "every decoder call goes through the bounded decoder wrapper" {
+  # direct dpkg-deb/tar invocations (outside comments and help text) must be prefixed by decoder
+  run bash -c "grep -nE 'dpkg-deb (-f|--fsys-tarfile)|tar -[a-zA-Z]+f' '${TOOL}' | grep -vE '^[0-9]+:[[:space:]]*#' | grep -v 'decoder \|finish '"
+  [[ "${status}" -ne 0 ]]
+  run grep -c 'decoder dpkg-deb' "${TOOL}"
+  [[ "${output}" -ge 3 ]]
+}
+
+@test "hardlink reason names the link target" {
+  echo hardlink >"${MOCKDIR}/tar_mode"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 3 ]]
+  [[ "$(reason_of)" == *"verify that path instead"* ]]
+  [[ "$(reason_of)" == *"/usr/bin/aaa"* ]]
 }

@@ -15,7 +15,7 @@
 # 3 error/usage, 4 match-unverified (self-reported only).
 set -euo pipefail
 
-TOOL_VERSION="1.1.0"
+TOOL_VERSION="1.2.0"
 
 usage() {
   cat <<EOF
@@ -53,9 +53,14 @@ Optional:
   --help                show this help
   --version             show the tool version
 
-Remote commands (all read-only): readlink, stat, sha256sum, dpkg -S,
+Remote commands (all read-only): readlink, wc, sha256sum, dpkg -S,
 dpkg-divert, dpkg-query, apt-cache show/policy. On the Proxmox host: pct config,
 pvesm path, debugfs (read-only, no -w). It never mounts or writes.
+
+Runner requirements: jq curl dpkg-deb tar ssh sha256sum timeout (a missing one
+is an error, exit 3). Every package decoder (dpkg-deb, tar) runs under a
+timeout (PV_DECODER_TIMEOUT seconds, default 120) and a virtual memory cap
+(PV_DECODER_VMEM_KB, default 1048576 = 1 GiB).
 
 Verdicts and exit codes:
   match            0  outside (hypervisor) hash == inside hash == package
@@ -69,7 +74,10 @@ Verdicts and exit codes:
   error            3  usage error, ssh failure, non-canonical path, download or
                       metadata failure (.deb sha256 != target apt SHA256, or
                       .deb control fields != claimed package), outside file
-                      is not a regular file, or the package member is a link
+                      is not a regular file or its read is incomplete, or the
+                      package member is a link. A mismatch already established
+                      by the inside hash is reported as mismatch even when the
+                      outside view then fails.
 
 Note: archive_signature is always "not-verified". Trust in the .deb rests on
 the target's apt-verified metadata (SHA256 from its GPG-checked lists), which a
@@ -83,9 +91,12 @@ EOF
 HOST="" FPATH="" PVE_HOST="" CTID="" FORMAT="json" MIRROR="" INSIDE_VIA_PCT=0
 
 # ---- state used for output ----
-RESOLVED="" PKG="" VERSION="" ARCH="" ORIGIN="" DEB_URL="" DEB_SHA="" DEB_META_MATCH="null"
+RESOLVED="" DPKG_PATH="" INSIDE_SIZE="" MEMBER_SIZE="" PKG="" VERSION="" ARCH="" ORIGIN="" DEB_URL="" DEB_SHA="" DEB_META_MATCH="null"
 APT_SHA="" SHA_INSIDE="" SHA_EXTRACTED="" SHA_OUTSIDE="" OUTSIDE_REASON="" VERDICT="" REASON=""
 WORK=""
+EMPTY_SHA="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+PV_DECODER_TIMEOUT="${PV_DECODER_TIMEOUT:-120}"
+PV_DECODER_VMEM_KB="${PV_DECODER_VMEM_KB:-1048576}"
 
 cleanup() {
   if [[ -n "${WORK}" && -d "${WORK}" ]]; then
@@ -143,6 +154,14 @@ else
   [[ -n "$HOST" ]] || fail_usage "--host is required"
 fi
 if [[ -n "$MIRROR" ]]; then valid_mirror "$MIRROR" || fail_usage "--mirror must be an https URL"; MIRROR="${MIRROR%/}"; fi
+[[ "$PV_DECODER_TIMEOUT" =~ ^[0-9]+$ && "$PV_DECODER_VMEM_KB" =~ ^[0-9]+$ ]] || fail_usage "PV_DECODER_TIMEOUT and PV_DECODER_VMEM_KB must be digits"
+
+# ---- dependency preflight (before any output that assumes jq) ----
+missing=""
+for dep in jq curl dpkg-deb tar ssh sha256sum timeout; do
+  command -v "$dep" >/dev/null 2>&1 || missing+=" ${dep}"
+done
+[[ -z "$missing" ]] || fail_usage "missing required command(s):${missing}"
 
 # ---- output ----
 emit_json() {
@@ -155,6 +174,7 @@ emit_json() {
     --arg host "${HOST:-${PVE_HOST}/ct${CTID}}" \
     --arg path "$FPATH" \
     --arg resolved "$RESOLVED" \
+    --arg dpkg_path "$DPKG_PATH" \
     --arg pve_host "$PVE_HOST" \
     --arg ctid "$CTID" \
     --arg package "$PKG" \
@@ -180,6 +200,7 @@ emit_json() {
       timestamp_utc: $timestamp,
       inputs: {host: $host, path: $path, pve_host: ($pve_host | nn), ctid: ($ctid | nn)},
       resolved_path: ($resolved | nn),
+      dpkg_path: ($dpkg_path | nn),
       package: ($package | nn),
       version: ($version | nn),
       arch: ($arch | nn),
@@ -282,7 +303,15 @@ run_pve() {
   shift
   local q="" a
   for a in "$@"; do q+=" $(printf '%q' "$a")"; done
-  ssh "${SSH_OPTS[@]}" -- "$PVE_HOST" "sh -s --${q}" <<<"$script"
+  ssh "${SSH_OPTS[@]}" -- "$PVE_HOST" "bash -s --${q}" <<<"$script"
+}
+
+# Run a package decoder (dpkg-deb, tar) on untrusted archive data with a wall
+# clock limit and a virtual memory cap, so a decompression bomb cannot exhaust
+# the runner. Used in pipelines, i.e. already in its own subshell.
+decoder() {
+  ulimit -v "$PV_DECODER_VMEM_KB" 2>/dev/null || true
+  exec timeout -k 5 "$PV_DECODER_TIMEOUT" "$@"
 }
 
 section() { # section <name> <data>
@@ -297,11 +326,20 @@ if [ ! -f "$r" ]; then echo "@@error"; echo "not a regular file: $r"; exit 0; fi
 echo "@@resolved"; echo "$r"
 echo "@@owner"
 o=$(dpkg -S -- "$r" 2>/dev/null | grep -v "^diversion by") || true
-[ -n "$o" ] || o=$(dpkg -S -- "$p" 2>/dev/null | grep -v "^diversion by") || true
+if [ -z "$o" ]; then
+  # usrmerge: dpkg may register /bin/x for a file that lives at /usr/bin/x.
+  case "$r" in
+    /usr/bin/*|/usr/sbin/*|/usr/lib/*|/usr/lib32/*|/usr/lib64/*|/usr/libx32/*) alt=${r#/usr} ;;
+    /bin/*|/sbin/*|/lib/*|/lib32/*|/lib64/*|/libx32/*) alt=/usr$r ;;
+    *) alt="" ;;
+  esac
+  if [ -n "$alt" ]; then o=$(dpkg -S -- "$alt" 2>/dev/null | grep -v "^diversion by") || true; fi
+fi
 printf "%s\n" "$o"
 echo "@@divert"
 echo "truename=$(dpkg-divert --truename "$r" 2>/dev/null)"
 echo "listpackage=$(dpkg-divert --listpackage "$r" 2>/dev/null)"
+echo "@@size"; wc -c < "$r" | tr -d " "
 echo "@@sha256"
 sha256sum -- "$r" | cut -d" " -f1
 echo "@@end"
@@ -325,6 +363,9 @@ echo "@@end"
 
 # shellcheck disable=SC2016
 OUTSIDE_SCRIPT='# pv:outside
+# Runs under bash with pipefail: a timed-out or failed debugfs read must not
+# yield a valid-looking hash of partial or empty input.
+set -o pipefail
 ctid=$1
 f=$2
 line=$(pct config "$ctid" 2>/dev/null | grep "^rootfs: ") || { echo "@@error"; echo "no rootfs in pct config"; exit 0; }
@@ -336,7 +377,14 @@ if [ -b "$dev" ]; then
   echo "block"
   echo "@@type"; timeout 60 debugfs -R "stat $f" "$dev" 2>/dev/null | sed -n "s/^.*Type: *\([a-z]*\).*/\1/p" | head -n 1
   echo "@@size"; timeout 60 debugfs -R "stat $f" "$dev" 2>/dev/null | sed -n "s/^.*Size: \([0-9][0-9]*\).*/\1/p" | head -n 1
-  echo "@@sha256"; timeout 300 debugfs -R "cat $f" "$dev" 2>/dev/null | sha256sum | cut -d" " -f1
+  if ! h=$(timeout 300 debugfs -R "cat $f" "$dev" 2>/dev/null | sha256sum | cut -d" " -f1); then
+    echo "@@error"; echo "debugfs read failed or timed out (hash pass)"; exit 0
+  fi
+  if ! n=$(timeout 300 debugfs -R "cat $f" "$dev" 2>/dev/null | wc -c); then
+    echo "@@error"; echo "debugfs read failed or timed out (byte count pass)"; exit 0
+  fi
+  echo "@@sha256"; echo "$h"
+  echo "@@bytes"; echo "$n" | tr -d " "
 elif [ -d "$dev" ]; then
   echo "dir"
 else
@@ -361,6 +409,11 @@ if [[ "$RESOLVED" != "$FPATH" ]]; then
 fi
 SHA_INSIDE="$(section sha256 "$own_out" | head -n 1)"
 valid_sha "$SHA_INSIDE" || finish error "target returned an invalid sha256 for the live file"
+INSIDE_SIZE="$(section size "$own_out" | head -n 1)"
+[[ "$INSIDE_SIZE" =~ ^[0-9]{1,15}$ ]] || finish error "target returned an invalid size for the live file"
+if [[ "$SHA_INSIDE" == "$EMPTY_SHA" && "$INSIDE_SIZE" != "0" ]]; then
+  finish error "live file hash is the empty-input hash but its size is ${INSIDE_SIZE} bytes; the read failed or was truncated"
+fi
 
 divert_true="$(section divert "$own_out" | sed -n 's/^truename=//p' | head -n 1)"
 divert_pkg="$(section divert "$own_out" | sed -n 's/^listpackage=//p' | head -n 1)"
@@ -376,6 +429,22 @@ PKG="${owner_line%%: *}"
 PKG="${PKG%%,*}"
 PKG="${PKG// /}"
 valid_pkg "$PKG" || finish error "target returned an unsafe package name"
+
+# The path dpkg registered: the canonical path itself or its usrmerge alias
+# (/usr/bin <-> /bin, /usr/sbin <-> /sbin, /usr/lib* <-> /lib*). Anything else
+# from the target is rejected. The package member uses the dpkg path; the
+# inside hash and the outside view keep using the canonical path.
+usrmerge_alias() { # usrmerge_alias <path> -> prints the alias, or nothing
+  case "$1" in
+    /usr/bin/* | /usr/sbin/* | /usr/lib/* | /usr/lib32/* | /usr/lib64/* | /usr/libx32/*) printf '%s' "${1#/usr}" ;;
+    /bin/* | /sbin/* | /lib/* | /lib32/* | /lib64/* | /libx32/*) printf '/usr%s' "$1" ;;
+  esac
+}
+DPKG_PATH="${owner_line##*: }"
+valid_path "$DPKG_PATH" || finish error "target returned an unsafe dpkg path"
+if [[ "$DPKG_PATH" != "$FPATH" && "$DPKG_PATH" != "$(usrmerge_alias "$FPATH")" ]]; then
+  finish error "dpkg registers this file under an unrelated path (${DPKG_PATH}); refusing to guess"
+fi
 
 # ---- 2. inside: version, arch, apt metadata, origin ----
 if ! meta_out="$(run_inside "$META_SCRIPT" "$PKG" 2>/dev/null)"; then
@@ -431,6 +500,7 @@ fetch() { # fetch <url> <out> -> prints http code
   curl -sSL --proto '=https' --proto-redir '=https' --max-redirs 5 --max-time 300 --max-filesize 209715200 \
     -o "$2" -w '%{http_code}' -- "$1" 2>/dev/null || true
 }
+net_failure() { [[ -z "$1" || "$1" == 000 || "$1" == 5?? ]]; } # no response, or a server error
 
 code="$(fetch "$DEB_URL" "$DEB")"
 if [[ "$code" == "404" && "$MIRROR" == *debian.org* ]]; then
@@ -438,6 +508,9 @@ if [[ "$code" == "404" && "$MIRROR" == *debian.org* ]]; then
   enc_ver="${VERSION//:/%3A}"
   meta_json="${WORK}/snapshot.json"
   mcode="$(fetch "https://snapshot.debian.org/mr/binary/${PKG}/${enc_ver}/binfiles?fileinfo=1" "$meta_json")"
+  if net_failure "$mcode"; then
+    finish error "snapshot.debian.org lookup failed (http ${mcode:-none}); cannot tell whether the version exists"
+  fi
   if [[ "$mcode" == "200" ]]; then
     snap_hash="$(jq -r --arg a "$ARCH" '[.result[] | select(.architecture == $a) | .hash][0] // empty' "$meta_json" 2>/dev/null || true)"
     if [[ "$snap_hash" =~ ^[0-9a-f]{40,64}$ ]]; then
@@ -446,8 +519,14 @@ if [[ "$code" == "404" && "$MIRROR" == *debian.org* ]]; then
     fi
   fi
   if [[ "$code" != "200" ]]; then
+    if net_failure "$code"; then
+      finish error "download failed (http ${code:-none}) for ${DEB_URL}"
+    fi
     finish package-unknown "${PKG}=${VERSION} is not in the pool or on snapshot.debian.org"
   fi
+fi
+if net_failure "$code"; then
+  finish error "download failed (http ${code:-none}) for ${DEB_URL}"
 fi
 if [[ "$code" == "404" ]]; then
   finish package-unknown "${PKG}=${VERSION} not found at ${DEB_URL}"
@@ -462,7 +541,12 @@ fi
 DEB_META_MATCH="true"
 
 # The archive must be the package the target claimed (name, version, arch).
-ctrl="$(dpkg-deb -f "$DEB" Package Version Architecture 2>/dev/null)" || finish error "dpkg-deb -f failed on the downloaded package"
+# Control output is capped at 4 KiB; decoders are time and memory bounded.
+ctrl_raw="$(decoder dpkg-deb -f "$DEB" Package Version Architecture 2>/dev/null | head -c 4097; printf '@@rc %s' "${PIPESTATUS[*]}")"
+ctrl="${ctrl_raw%@@rc *}"
+ctrl_rc="${ctrl_raw##*@@rc }"
+[[ "$(printf '%s' "$ctrl" | LC_ALL=C wc -c)" -le 4096 ]] || finish error "dpkg-deb -f output is oversized; not trusting the package"
+[[ "$ctrl_rc" == "0 0" ]] || finish error "dpkg-deb -f failed or timed out on the downloaded package"
 c_pkg="$(sed -n 's/^Package: //p' <<<"$ctrl" | head -n 1)"
 c_ver="$(sed -n 's/^Version: //p' <<<"$ctrl" | head -n 1)"
 c_arch="$(sed -n 's/^Architecture: //p' <<<"$ctrl" | head -n 1)"
@@ -470,70 +554,125 @@ if [[ "$c_pkg" != "$PKG" || "$c_ver" != "$VERSION" || "$c_arch" != "$ARCH" ]]; t
   finish error "downloaded .deb control fields do not match the target claim (package, version or architecture); not trusting it"
 fi
 
-# Locate the member without extracting anything: exactly one entry named
-# ./<FPATH>, and it must be a regular file (tar type '-'), not a link.
-MEMBER=".${FPATH}"
-listing="$(timeout 120 dpkg-deb --fsys-tarfile "$DEB" 2>/dev/null | timeout 120 tar -tvf - 2>/dev/null)" || finish error "could not list the downloaded package contents"
-members="$(awk -v m="$MEMBER" '
+# Locate the member without extracting anything or keeping the listing: the
+# tar listing is filtered as a stream for ./<DPKG_PATH> and the reader stops
+# after two matches (that already proves "not exactly one"). The early exit
+# makes the decoders die of SIGPIPE (141), which is expected only then.
+MEMBER=".${DPKG_PATH}"
+list_raw="$(decoder dpkg-deb --fsys-tarfile "$DEB" 2>/dev/null | decoder tar -tvf - 2>/dev/null | awk -v m="$MEMBER" '
   { rest=$0; if (!sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "", rest)) next
-    if (rest == m || index(rest, m " -> ") == 1 || index(rest, m " link to ") == 1) print substr($0, 1, 1) }
-' <<<"$listing")"
+    if (rest == m || index(rest, m " -> ") == 1 || index(rest, m " link to ") == 1) {
+      n++; printf "%s\t%s\t%s\n", substr($0, 1, 1), $3, rest
+      if (n >= 2) exit
+    } }
+'; printf '@@rc %s' "${PIPESTATUS[*]}")"
+list_rc="${list_raw##*@@rc }"
+members="${list_raw%@@rc *}"
+members="${members%$'\n'}"
 n_members=0
 [[ -z "$members" ]] || n_members="$(wc -l <<<"$members")"
+read -r rc_dpkg rc_tar rc_awk <<<"$list_rc"
+if [[ "$rc_awk" != "0" ]]; then
+  finish error "could not list the downloaded package contents"
+fi
+# 141 (SIGPIPE) is the expected early-exit status only after two matches.
+for rc in "$rc_dpkg" "$rc_tar"; do
+  if [[ "$rc" != "0" && ! ( "$rc" == "141" && "$n_members" -ge 2 ) ]]; then
+    finish error "could not list the downloaded package contents (decoder status ${rc}; a timeout or memory cap also lands here)"
+  fi
+done
 if [[ "$n_members" -eq 0 ]]; then
-  finish package-unknown "package ${PKG}=${VERSION} does not contain ${FPATH} (generated at install time)"
+  finish package-unknown "package ${PKG}=${VERSION} does not contain ${DPKG_PATH} (generated at install time)"
 fi
 if [[ "$n_members" -ne 1 ]]; then
-  finish error "package ${PKG}=${VERSION} has ${n_members} entries for ${FPATH}; refusing to guess"
+  finish error "package ${PKG}=${VERSION} has more than one entry for ${DPKG_PATH}; refusing to guess"
 fi
-if [[ "$members" != "-" ]]; then
-  finish error "package ${PKG}=${VERSION} ships ${FPATH} as a link or special entry, not a regular file"
+IFS=$'\t' read -r m_type MEMBER_SIZE m_rest <<<"$members"
+if [[ "$m_type" != "-" ]]; then
+  hint=""
+  case "$m_type" in
+    h) t="${m_rest#* link to }" ;;
+    l) t="${m_rest#* -> }" ;;
+    *) t="" ;;
+  esac
+  t="${t#./}"
+  t="/$(md_clean "$t" 120)"
+  if [[ -n "$t" && "$t" != "/" ]] && valid_path "$t"; then
+    hint="; it points at ${t}, verify that path instead"
+  fi
+  finish error "package ${PKG}=${VERSION} ships ${DPKG_PATH} as a link or special entry, not a regular file${hint}"
 fi
-SHA_EXTRACTED="$(timeout 300 dpkg-deb --fsys-tarfile "$DEB" 2>/dev/null | timeout 300 tar -xOf - "$MEMBER" 2>/dev/null | sha256sum | cut -d' ' -f1)" \
-  || finish error "could not stream the package file out of the archive"
+[[ "$MEMBER_SIZE" =~ ^[0-9]{1,15}$ ]] || finish error "package listing has an invalid size for ${DPKG_PATH}"
+SHA_EXTRACTED="$(decoder dpkg-deb --fsys-tarfile "$DEB" 2>/dev/null | decoder tar -xOf - "$MEMBER" 2>/dev/null | sha256sum | cut -d' ' -f1)" \
+  || finish error "could not stream the package file out of the archive (decoder failed or timed out)"
 valid_sha "$SHA_EXTRACTED" || finish error "could not hash the package file"
 
 # ---- 4. outside view (Proxmox host, read-only, caller-supplied path only) ----
-if [[ -n "$PVE_HOST" && -n "$CTID" ]]; then
-  if out_raw="$(run_pve "$OUTSIDE_SCRIPT" "$CTID" "$FPATH" 2>/dev/null)" && [[ "$out_raw" == *"@@end"* || "$out_raw" == *"@@error"* ]]; then
-    if [[ "$out_raw" == *"@@error"* ]]; then
-      finish error "outside view requested but unavailable: $(section error "$out_raw" | head -n 1)"
-    fi
-    o_kind="$(section kind "$out_raw" | head -n 1)"
-    case "$o_kind" in
-      block)
-        o_type="$(section type "$out_raw" | head -n 1)"
-        o_size="$(section size "$out_raw" | head -n 1)"
-        o_sha="$(section sha256 "$out_raw" | head -n 1)"
-        if [[ -z "$o_type" || -z "$o_size" ]]; then
-          finish error "outside view requested but the file could not be stat'ed on the volume (missing or read failed)"
-        fi
-        if [[ "$o_type" != "regular" ]]; then
-          finish error "outside view: ${FPATH} is not a regular file on the container volume (type: $(md_clean "$o_type" 20)); pass the canonical path"
-        fi
-        valid_sha "$o_sha" || finish error "outside view requested but returned no valid sha256"
-        SHA_OUTSIDE="$o_sha"
-        ;;
-      dir)
-        OUTSIDE_REASON="unsupported rootfs type (directory-backed); outside view not taken"
-        ;;
-      *)
-        OUTSIDE_REASON="unsupported rootfs type (not a block device); outside view not taken"
-        ;;
-    esac
-  else
-    finish error "outside view requested but unavailable: ssh to the Proxmox host failed or returned an incomplete response"
+# Failures here do not finish immediately: an established inside mismatch must
+# still be reported as a mismatch. They set OUTSIDE_FAIL (also kept as the
+# JSON reason) and the verdict step turns them into an error otherwise.
+OUTSIDE_FAIL=""
+take_outside() {
+  local out_raw o_kind o_type o_size o_sha o_bytes
+  if ! out_raw="$(run_pve "$OUTSIDE_SCRIPT" "$CTID" "$FPATH" 2>/dev/null)" || [[ "$out_raw" != *"@@end"* && "$out_raw" != *"@@error"* ]]; then
+    OUTSIDE_FAIL="outside view requested but unavailable: ssh to the Proxmox host failed or returned an incomplete response"
+    return 0
   fi
+  if [[ "$out_raw" == *"@@error"* ]]; then
+    OUTSIDE_FAIL="outside view requested but unavailable: $(md_clean "$(section error "$out_raw" | head -n 1)" 200)"
+    return 0
+  fi
+  o_kind="$(section kind "$out_raw" | head -n 1)"
+  case "$o_kind" in
+    block)
+      o_type="$(section type "$out_raw" | head -n 1)"
+      o_size="$(section size "$out_raw" | head -n 1)"
+      o_sha="$(section sha256 "$out_raw" | head -n 1)"
+      o_bytes="$(section bytes "$out_raw" | head -n 1)"
+      if [[ -z "$o_type" || -z "$o_size" ]]; then
+        OUTSIDE_FAIL="outside view requested but the file could not be stat'ed on the volume (missing or read failed)"
+      elif [[ "$o_type" != "regular" ]]; then
+        OUTSIDE_FAIL="outside view: ${FPATH} is not a regular file on the container volume (type: $(md_clean "$o_type" 20)); pass the canonical path"
+      elif ! valid_sha "$o_sha"; then
+        OUTSIDE_FAIL="outside view requested but returned no valid sha256"
+      elif [[ ! "$o_size" =~ ^[0-9]{1,15}$ || ! "$o_bytes" =~ ^[0-9]{1,15}$ ]]; then
+        OUTSIDE_FAIL="outside view returned no valid size or byte count"
+      elif [[ "$o_bytes" != "$o_size" ]]; then
+        OUTSIDE_FAIL="outside view read ${o_bytes} bytes but the volume reports ${o_size}; the read was incomplete, so its hash is not trusted"
+      else
+        SHA_OUTSIDE="$o_sha"
+        OUTSIDE_SIZE="$o_size"
+      fi
+      ;;
+    dir) OUTSIDE_REASON="unsupported rootfs type (directory-backed); outside view not taken" ;;
+    *) OUTSIDE_REASON="unsupported rootfs type (not a block device); outside view not taken" ;;
+  esac
+}
+OUTSIDE_SIZE=""
+if [[ -n "$PVE_HOST" && -n "$CTID" ]]; then
+  take_outside
+  [[ -z "$OUTSIDE_FAIL" ]] || OUTSIDE_REASON="$OUTSIDE_FAIL"
 else
   OUTSIDE_REASON="no --pve-host/--ctid given (no independent outside view)"
 fi
 
 # ---- 5. verdict ----
+# Precedence: a hash mismatch beats any failure of the outside view.
 if [[ "$SHA_INSIDE" != "$SHA_EXTRACTED" ]]; then
-  finish mismatch "live file differs from the package file"
+  note=""
+  [[ -z "$OUTSIDE_FAIL" ]] || note="; the outside view also failed: $(md_clean "$OUTSIDE_FAIL" 160)"
+  finish mismatch "live file differs from the package file${note}"
 fi
+if [[ "$INSIDE_SIZE" != "$MEMBER_SIZE" ]]; then
+  finish error "live file size (${INSIDE_SIZE}) differs from the package file size (${MEMBER_SIZE}) although the hashes agree; the read is inconsistent"
+fi
+[[ -z "$OUTSIDE_FAIL" ]] || finish error "$OUTSIDE_FAIL"
 if [[ -n "$SHA_OUTSIDE" && "$SHA_OUTSIDE" != "$SHA_EXTRACTED" ]]; then
   finish mismatch "outside read differs from the package file"
+fi
+if [[ -n "$SHA_OUTSIDE" && "$OUTSIDE_SIZE" != "$MEMBER_SIZE" ]]; then
+  SHA_OUTSIDE=""
+  finish error "outside size (${OUTSIDE_SIZE}) differs from the package file size (${MEMBER_SIZE}) although the hashes agree; the read is inconsistent"
 fi
 if [[ -n "$SHA_OUTSIDE" ]]; then
   finish match ""

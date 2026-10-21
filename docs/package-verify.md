@@ -41,6 +41,15 @@ Exit codes: `0` match (outside-verified), `1` mismatch, `2` package-unknown,
 symlink to `/usr/bin`, so pass `/usr/bin/passwd`, not `/bin/passwd`. The outside
 view always reads the path you supplied, never a path the target reported.
 
+On Debian 12 and other usrmerged systems dpkg may register a file as
+`/bin/ls` while the real path is `/usr/bin/ls`, and the .deb ships `./bin/ls`.
+When `dpkg -S` finds nothing for the canonical path, the tool tries the
+usrmerge alias (`/usr/bin` <-> `/bin`, `/usr/sbin` <-> `/sbin`,
+`/usr/lib*` <-> `/lib*`). The dpkg-registered path is used as the package
+member and is reported as `dpkg_path` in the JSON; the inside hash and the
+outside view keep using the canonical path. A dpkg path that is neither the
+canonical path nor its alias is an `error`.
+
 ## What it does
 
 1. Validates every argument against a strict allowlist before any remote use,
@@ -59,18 +68,37 @@ view always reads the path you supplied, never a path the target reported.
    `error`, never `match`. Nothing is extracted to disk. The member list comes
    from `dpkg-deb --fsys-tarfile | tar -tvf -` and must contain exactly one
    entry for `./<path>` that is a regular file (a symlink or hardlink entry is
-   `error`; no entry is `package-unknown`). The file is then hashed by
-   streaming it with `tar -xOf -`. The package is untrusted data: nothing is
+   `error`; no entry is `package-unknown`). The listing is filtered as a
+   stream and never stored: the reader stops after two matches, which already
+   proves "not exactly one" (a hardlink or symlink error names the link
+   target so you can verify that path instead). The file is then hashed by
+   streaming it with `tar -xOf -`. Every decoder (`dpkg-deb -f`,
+   `dpkg-deb --fsys-tarfile`, `tar`) runs under a timeout (`PV_DECODER_TIMEOUT`,
+   default 120 seconds) and a virtual memory cap (`PV_DECODER_VMEM_KB`, default
+   1048576, i.e. 1 GiB), and control-field output is capped at 4 KiB, so a
+   decompression bomb inside the 200 MB download ends as `error`, not as a
+   hang or an out-of-memory runner. The package is untrusted data: nothing is
    installed and nothing from it is executed. If the pool no longer has the
    version on a Debian archive, `snapshot.debian.org` is tried.
 4. Outside view (with `--pve-host` and `--ctid`): on the Proxmox host,
    `pct config` to find the rootfs volume and `pvesm path` to resolve it. Only a
    block device is read, with read-only `debugfs` (no `-w`): `stat` must show a
-   regular file, then `cat` is hashed. A directory-backed rootfs is not read at
+   regular file, then `cat` is hashed in one pass and counted in a second. The
+   script runs under `bash` with `pipefail`, so a failed or timed-out read is
+   an `@@error`, and the runner accepts the hash only if the byte count equals
+   the size `debugfs stat` reports (a failed read often exits 0 and yields the
+   hash of empty input). The live file gets the same check: the empty-input
+   hash with a non-zero size is an `error`, and a size that differs from the
+   package member while the hashes agree is an `error`. If the hashes differ,
+   the result is a real `mismatch` regardless of size. A directory-backed rootfs is not read at
    all (following a container-controlled symlink from the hypervisor would be
    unsafe); the outside value is `null` with the reason "unsupported rootfs type
    (directory-backed); outside view not taken". The container is never mounted.
    A block-device read of a running container can lag the page cache.
+   An unreachable Proxmox host or a failed outside read is an `error`, unless
+   the inside hash already differs from the package file: a mismatch always
+   wins, and the outside failure is recorded in the reason and in
+   `sha256_outside_reason`.
 5. Verdict, see below.
 
 ## Verdicts and trust
@@ -81,7 +109,7 @@ view always reads the path you supplied, never a path the target reported.
 | `match-unverified` | 4 | inside hash equals package file hash, no independent outside view | `self-reported` |
 | `mismatch` | 1 | any compared hash differs | as available |
 | `package-unknown` | 2 | not owned, diverted, version or file not in the archive, unsupported origin | as available |
-| `error` | 3 | see above | as available |
+| `error` | 3 | usage error, missing runner command (`jq curl dpkg-deb tar ssh sha256sum timeout`), ssh failure, download network failure (curl 000 or HTTP 5xx; a 404 stays `package-unknown`), integrity check failure, incomplete or inconsistent read, decoder timeout | as available |
 
 `match` needs an independent outside (hypervisor) hash. Without one, every
 fact (the resolved path, the owning package, its version, the .deb checksum and
@@ -95,7 +123,9 @@ JSON includes the tool version, UTC timestamp, inputs (host labels as given),
 package, version, architecture, origin, `deb_url`, `deb_sha256` and whether it
 matched the apt metadata, the inside, extracted and outside SHA-256 values (the
 outside value is `null` plus a reason when there is no outside view), the
-verdict, `trust`, and `archive_signature: "not-verified"`. In Markdown output,
+verdict, `trust`, `dpkg_path` (the path dpkg registered, which differs from
+`resolved_path` only for a usrmerge alias), and
+`archive_signature: "not-verified"`. In Markdown output,
 target-controlled text is reduced to printable ASCII, truncated to 200
 characters and Markdown-escaped before it is rendered.
 
