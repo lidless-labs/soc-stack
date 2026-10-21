@@ -15,7 +15,7 @@
 # 3 error/usage, 4 match-unverified (self-reported only).
 set -euo pipefail
 
-TOOL_VERSION="1.2.0"
+TOOL_VERSION="1.3.0"
 
 usage() {
   cat <<EOF
@@ -58,9 +58,12 @@ dpkg-divert, dpkg-query, apt-cache show/policy. On the Proxmox host: pct config,
 pvesm path, debugfs (read-only, no -w). It never mounts or writes.
 
 Runner requirements: jq curl dpkg-deb tar ssh sha256sum timeout (a missing one
-is an error, exit 3). Every package decoder (dpkg-deb, tar) runs under a
-timeout (PV_DECODER_TIMEOUT seconds, default 120) and a virtual memory cap
-(PV_DECODER_VMEM_KB, default 1048576 = 1 GiB).
+is an error, exit 3). Every package decoder and parser stage (dpkg-deb, tar,
+the listing filter) runs under a timeout (PV_DECODER_TIMEOUT seconds, 1..3600,
+default 120) and a virtual memory cap (PV_DECODER_VMEM_KB, 262144..8388608,
+default 1048576 = 1 GiB). Out-of-range values are rejected with exit 3, and a
+cap that cannot be applied is an error (the tool fails closed). dpkg-deb runs
+single-threaded (--threads-max=1) so the xz decoder fits under the cap.
 
 Verdicts and exit codes:
   match            0  outside (hypervisor) hash == inside hash == package
@@ -154,7 +157,13 @@ else
   [[ -n "$HOST" ]] || fail_usage "--host is required"
 fi
 if [[ -n "$MIRROR" ]]; then valid_mirror "$MIRROR" || fail_usage "--mirror must be an https URL"; MIRROR="${MIRROR%/}"; fi
-[[ "$PV_DECODER_TIMEOUT" =~ ^[0-9]+$ && "$PV_DECODER_VMEM_KB" =~ ^[0-9]+$ ]] || fail_usage "PV_DECODER_TIMEOUT and PV_DECODER_VMEM_KB must be digits"
+[[ "$PV_DECODER_TIMEOUT" =~ ^[0-9]{1,7}$ && "$PV_DECODER_VMEM_KB" =~ ^[0-9]{1,9}$ ]] || fail_usage "PV_DECODER_TIMEOUT and PV_DECODER_VMEM_KB must be decimal digits"
+PV_DECODER_TIMEOUT=$((10#$PV_DECODER_TIMEOUT))
+PV_DECODER_VMEM_KB=$((10#$PV_DECODER_VMEM_KB))
+(( PV_DECODER_TIMEOUT >= 1 && PV_DECODER_TIMEOUT <= 3600 )) || fail_usage "PV_DECODER_TIMEOUT must be between 1 and 3600 seconds"
+(( PV_DECODER_VMEM_KB >= 262144 && PV_DECODER_VMEM_KB <= 8388608 )) || fail_usage "PV_DECODER_VMEM_KB must be between 262144 and 8388608"
+# Fail closed: refuse to run at all if the memory cap cannot be applied.
+( ulimit -v "$PV_DECODER_VMEM_KB" ) 2>/dev/null || fail_usage "cannot apply the decoder memory cap (ulimit -v ${PV_DECODER_VMEM_KB}); refusing to run uncapped"
 
 # ---- dependency preflight (before any output that assumes jq) ----
 missing=""
@@ -306,11 +315,16 @@ run_pve() {
   ssh "${SSH_OPTS[@]}" -- "$PVE_HOST" "bash -s --${q}" <<<"$script"
 }
 
-# Run a package decoder (dpkg-deb, tar) on untrusted archive data with a wall
-# clock limit and a virtual memory cap, so a decompression bomb cannot exhaust
-# the runner. Used in pipelines, i.e. already in its own subshell.
+# Run a package decoder or parser stage (dpkg-deb, tar, the listing filter) on
+# untrusted archive data with a wall clock limit and a virtual memory cap, so a
+# decompression bomb or an oversized record cannot exhaust the runner. Used in
+# pipelines, i.e. already in its own subshell. Fails closed: if the cap cannot
+# be applied the stage exits 3 instead of running uncapped.
 decoder() {
-  ulimit -v "$PV_DECODER_VMEM_KB" 2>/dev/null || true
+  if ! ulimit -v "$PV_DECODER_VMEM_KB" 2>/dev/null; then
+    echo "package-verify: cannot apply the decoder memory cap" >&2
+    exit 3
+  fi
   exec timeout -k 5 "$PV_DECODER_TIMEOUT" "$@"
 }
 
@@ -326,6 +340,9 @@ if [ ! -f "$r" ]; then echo "@@error"; echo "not a regular file: $r"; exit 0; fi
 echo "@@resolved"; echo "$r"
 echo "@@owner"
 o=$(dpkg -S -- "$r" 2>/dev/null | grep -v "^diversion by") || true
+via_alias=0
+alias_path=""
+alias_real=""
 if [ -z "$o" ]; then
   # usrmerge: dpkg may register /bin/x for a file that lives at /usr/bin/x.
   case "$r" in
@@ -333,12 +350,24 @@ if [ -z "$o" ]; then
     /bin/*|/sbin/*|/lib/*|/lib32/*|/lib64/*|/libx32/*) alt=/usr$r ;;
     *) alt="" ;;
   esac
-  if [ -n "$alt" ]; then o=$(dpkg -S -- "$alt" 2>/dev/null | grep -v "^diversion by") || true; fi
+  if [ -n "$alt" ]; then
+    # Accept alias ownership only when the alias really resolves to the file.
+    alias_real=$(readlink -f -- "$alt" 2>/dev/null) || alias_real=""
+    if [ "$alias_real" = "$r" ]; then
+      o=$(dpkg -S -- "$alt" 2>/dev/null | grep -v "^diversion by") || true
+      if [ -n "$o" ]; then via_alias=1; alias_path=$alt; fi
+    fi
+  fi
 fi
 printf "%s\n" "$o"
 echo "@@divert"
 echo "truename=$(dpkg-divert --truename "$r" 2>/dev/null)"
 echo "listpackage=$(dpkg-divert --listpackage "$r" 2>/dev/null)"
+if [ "$via_alias" = 1 ]; then
+  echo "alias_truename=$(dpkg-divert --truename "$alias_path" 2>/dev/null)"
+  echo "alias_listpackage=$(dpkg-divert --listpackage "$alias_path" 2>/dev/null)"
+  echo "@@alias"; echo "$alias_path"; echo "$alias_real"
+fi
 echo "@@size"; wc -c < "$r" | tr -d " "
 echo "@@sha256"
 sha256sum -- "$r" | cut -d" " -f1
@@ -377,14 +406,21 @@ if [ -b "$dev" ]; then
   echo "block"
   echo "@@type"; timeout 60 debugfs -R "stat $f" "$dev" 2>/dev/null | sed -n "s/^.*Type: *\([a-z]*\).*/\1/p" | head -n 1
   echo "@@size"; timeout 60 debugfs -R "stat $f" "$dev" 2>/dev/null | sed -n "s/^.*Size: \([0-9][0-9]*\).*/\1/p" | head -n 1
-  if ! h=$(timeout 300 debugfs -R "cat $f" "$dev" 2>/dev/null | sha256sum | cut -d" " -f1); then
-    echo "@@error"; echo "debugfs read failed or timed out (hash pass)"; exit 0
-  fi
-  if ! n=$(timeout 300 debugfs -R "cat $f" "$dev" 2>/dev/null | wc -c); then
-    echo "@@error"; echo "debugfs read failed or timed out (byte count pass)"; exit 0
-  fi
+  # One read feeds both the hash and the byte count, so a partial read cannot
+  # pair a hash with the count of a different, complete read. The command
+  # substitution only returns after the counter (which holds fd 3, a copy of
+  # the substitution pipe) has finished, so both values are always complete.
+  res=$({
+    timeout 300 debugfs -R "cat $f" "$dev" 2>/dev/null \
+      | tee >(wc -c | sed "s/^/n=/" >&3) \
+      | sha256sum | cut -d" " -f1 | sed "s/^/h=/"
+    echo "rc=${PIPESTATUS[*]}" >&3
+  } 3>&1)
+  case "$res" in *"rc=0 0 0 0 0"*) ;; *) echo "@@error"; echo "debugfs read failed or timed out"; exit 0 ;; esac
+  h=$(printf "%s\n" "$res" | sed -n "s/^h=//p" | head -n 1)
+  n=$(printf "%s\n" "$res" | sed -n "s/^n=//p" | tr -d " " | head -n 1)
   echo "@@sha256"; echo "$h"
-  echo "@@bytes"; echo "$n" | tr -d " "
+  echo "@@bytes"; echo "$n"
 elif [ -d "$dev" ]; then
   echo "dir"
 else
@@ -444,6 +480,21 @@ DPKG_PATH="${owner_line##*: }"
 valid_path "$DPKG_PATH" || finish error "target returned an unsafe dpkg path"
 if [[ "$DPKG_PATH" != "$FPATH" && "$DPKG_PATH" != "$(usrmerge_alias "$FPATH")" ]]; then
   finish error "dpkg registers this file under an unrelated path (${DPKG_PATH}); refusing to guess"
+fi
+if [[ "$DPKG_PATH" != "$FPATH" ]]; then
+  # Alias ownership counts only if the target confirms the alias resolves to
+  # the canonical path; otherwise the alias is ignored (not owned). A
+  # diversion on the alias is treated like one on the canonical path.
+  alias_seen="$(section alias "$own_out" | sed -n '1p')"
+  alias_real="$(section alias "$own_out" | sed -n '2p')"
+  if [[ "$alias_seen" != "$DPKG_PATH" || "$alias_real" != "$RESOLVED" ]]; then
+    finish package-unknown "dpkg registers ${DPKG_PATH}, which does not resolve to ${FPATH} on the target; the alias is ignored, so the path is not owned"
+  fi
+  alias_divert_true="$(section divert "$own_out" | sed -n 's/^alias_truename=//p' | head -n 1)"
+  alias_divert_pkg="$(section divert "$own_out" | sed -n 's/^alias_listpackage=//p' | head -n 1)"
+  if [[ -n "$alias_divert_pkg" || ( -n "$alias_divert_true" && "$alias_divert_true" != "$DPKG_PATH" ) ]]; then
+    finish package-unknown "alias path ${DPKG_PATH} is subject to a dpkg diversion (${alias_divert_pkg:-unknown}); the owning package ships a different file at this path"
+  fi
 fi
 
 # ---- 2. inside: version, arch, apt metadata, origin ----
@@ -559,24 +610,35 @@ fi
 # after two matches (that already proves "not exactly one"). The early exit
 # makes the decoders die of SIGPIPE (141), which is expected only then.
 MEMBER=".${DPKG_PATH}"
-list_raw="$(decoder dpkg-deb --fsys-tarfile "$DEB" 2>/dev/null | decoder tar -tvf - 2>/dev/null | awk -v m="$MEMBER" '
+# Record bounding: tar -tv prints one line per member and a crafted PAX link
+# target can make that line enormous. cut (streaming, no line buffer) clips
+# every line before awk sees it, and awk emits only bounded fields: type
+# char, size, member name (512 bytes max) and link target (256 bytes max).
+# Every stage, including the parser, runs under the timeout and memory cap.
+# shellcheck disable=SC2016  # awk program, expansion is not wanted
+list_raw="$(decoder dpkg-deb --fsys-tarfile --threads-max=1 "$DEB" 2>/dev/null | decoder tar -tvf - 2>/dev/null | decoder cut -b 1-2048 | decoder awk -v m="$MEMBER" '
   { rest=$0; if (!sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "", rest)) next
-    if (rest == m || index(rest, m " -> ") == 1 || index(rest, m " link to ") == 1) {
-      n++; printf "%s\t%s\t%s\n", substr($0, 1, 1), $3, rest
-      if (n >= 2) exit
-    } }
+    tgt=""
+    if (rest == m) { name=m }
+    else if (index(rest, m " -> ") == 1) { name=m; tgt=substr(rest, length(m) + 5) }
+    else if (index(rest, m " link to ") == 1) { name=m; tgt=substr(rest, length(m) + 10) }
+    else next
+    gsub(/\t/, " ", tgt)
+    n++; printf "%s\t%s\t%s\t%s\n", substr($0, 1, 1), $3, substr(name, 1, 512), substr(tgt, 1, 256)
+    if (n >= 2) exit
+  }
 '; printf '@@rc %s' "${PIPESTATUS[*]}")"
 list_rc="${list_raw##*@@rc }"
 members="${list_raw%@@rc *}"
 members="${members%$'\n'}"
 n_members=0
 [[ -z "$members" ]] || n_members="$(wc -l <<<"$members")"
-read -r rc_dpkg rc_tar rc_awk <<<"$list_rc"
+read -r rc_dpkg rc_tar rc_cut rc_awk <<<"$list_rc"
 if [[ "$rc_awk" != "0" ]]; then
   finish error "could not list the downloaded package contents"
 fi
 # 141 (SIGPIPE) is the expected early-exit status only after two matches.
-for rc in "$rc_dpkg" "$rc_tar"; do
+for rc in "$rc_dpkg" "$rc_tar" "$rc_cut"; do
   if [[ "$rc" != "0" && ! ( "$rc" == "141" && "$n_members" -ge 2 ) ]]; then
     finish error "could not list the downloaded package contents (decoder status ${rc}; a timeout or memory cap also lands here)"
   fi
@@ -587,12 +649,11 @@ fi
 if [[ "$n_members" -ne 1 ]]; then
   finish error "package ${PKG}=${VERSION} has more than one entry for ${DPKG_PATH}; refusing to guess"
 fi
-IFS=$'\t' read -r m_type MEMBER_SIZE m_rest <<<"$members"
+IFS=$'\t' read -r m_type MEMBER_SIZE _ m_target <<<"$members"
 if [[ "$m_type" != "-" ]]; then
   hint=""
   case "$m_type" in
-    h) t="${m_rest#* link to }" ;;
-    l) t="${m_rest#* -> }" ;;
+    h | l) t="$m_target" ;;
     *) t="" ;;
   esac
   t="${t#./}"
@@ -603,7 +664,7 @@ if [[ "$m_type" != "-" ]]; then
   finish error "package ${PKG}=${VERSION} ships ${DPKG_PATH} as a link or special entry, not a regular file${hint}"
 fi
 [[ "$MEMBER_SIZE" =~ ^[0-9]{1,15}$ ]] || finish error "package listing has an invalid size for ${DPKG_PATH}"
-SHA_EXTRACTED="$(decoder dpkg-deb --fsys-tarfile "$DEB" 2>/dev/null | decoder tar -xOf - "$MEMBER" 2>/dev/null | sha256sum | cut -d' ' -f1)" \
+SHA_EXTRACTED="$(decoder dpkg-deb --fsys-tarfile --threads-max=1 "$DEB" 2>/dev/null | decoder tar -xOf - "$MEMBER" 2>/dev/null | sha256sum | cut -d' ' -f1)" \
   || finish error "could not stream the package file out of the archive (decoder failed or timed out)"
 valid_sha "$SHA_EXTRACTED" || finish error "could not hash the package file"
 
