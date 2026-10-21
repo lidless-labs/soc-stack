@@ -48,7 +48,12 @@ usrmerge alias (`/usr/bin` <-> `/bin`, `/usr/sbin` <-> `/sbin`,
 `/usr/lib*` <-> `/lib*`). The dpkg-registered path is used as the package
 member and is reported as `dpkg_path` in the JSON; the inside hash and the
 outside view keep using the canonical path. A dpkg path that is neither the
-canonical path nor its alias is an `error`.
+canonical path nor its alias is an `error`. The alias is accepted only when
+`readlink -f` of the alias on the target resolves to the canonical path;
+otherwise the alias is ignored and the file counts as not owned
+(`package-unknown`). A dpkg diversion on the alias path
+(`dpkg-divert --truename` or `--listpackage`) is treated like a diversion on
+the canonical path (`package-unknown`).
 
 ## What it does
 
@@ -72,18 +77,29 @@ canonical path nor its alias is an `error`.
    stream and never stored: the reader stops after two matches, which already
    proves "not exactly one" (a hardlink or symlink error names the link
    target so you can verify that path instead). The file is then hashed by
-   streaming it with `tar -xOf -`. Every decoder (`dpkg-deb -f`,
-   `dpkg-deb --fsys-tarfile`, `tar`) runs under a timeout (`PV_DECODER_TIMEOUT`,
-   default 120 seconds) and a virtual memory cap (`PV_DECODER_VMEM_KB`, default
-   1048576, i.e. 1 GiB), and control-field output is capped at 4 KiB, so a
-   decompression bomb inside the 200 MB download ends as `error`, not as a
-   hang or an out-of-memory runner. The package is untrusted data: nothing is
+   streaming it with `tar -xOf -`. Every decoder and parser stage
+   (`dpkg-deb -f`, `dpkg-deb --fsys-tarfile`, `tar`, and the listing filter)
+   runs under a timeout (`PV_DECODER_TIMEOUT`, 1 to 3600 seconds, default 120)
+   and a virtual memory cap (`PV_DECODER_VMEM_KB`, 262144 to 8388608, default
+   1048576, i.e. 1 GiB). Out-of-range or non-numeric values exit 3, and a
+   memory cap that cannot be applied is an error rather than a silent
+   no-op. `dpkg-deb --fsys-tarfile` always runs with `--threads-max=1`: the
+   multithreaded xz decoder in dpkg-deb 1.22 reserves per-thread address space
+   that exceeds the 1 GiB cap on large multi-block packages ("lzma error:
+   Cannot allocate memory"). Control-field output is capped at 4 KiB. The tar
+   listing is clipped to 2048 bytes per line before the filter sees it, and the
+   filter emits only bounded fields (type, size, member name up to 512 bytes,
+   link target up to 256 bytes), so a crafted PAX link target cannot exhaust
+   memory. A decompression bomb inside the 200 MB download ends as `error`,
+   not as a hang or an out-of-memory runner. The package is untrusted data: nothing is
    installed and nothing from it is executed. If the pool no longer has the
    version on a Debian archive, `snapshot.debian.org` is tried.
 4. Outside view (with `--pve-host` and `--ctid`): on the Proxmox host,
    `pct config` to find the rootfs volume and `pvesm path` to resolve it. Only a
    block device is read, with read-only `debugfs` (no `-w`): `stat` must show a
-   regular file, then `cat` is hashed in one pass and counted in a second. The
+   regular file, then `cat` is read once and that single stream is hashed and
+   counted together, so a partial read cannot pair a hash with the count of a
+   different, complete read. The
    script runs under `bash` with `pipefail`, so a failed or timed-out read is
    an `@@error`, and the runner accepts the hash only if the byte count equals
    the size `debugfs stat` reports (a failed read often exits 0 and yields the

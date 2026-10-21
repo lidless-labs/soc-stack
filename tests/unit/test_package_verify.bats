@@ -103,6 +103,13 @@ case "$1" in
         cp "${MOCKDIR}/extract_content" "${d}/usr/bin/chsh"
         members=(./usr/bin/chsh ./usr/bin/chsh ./usr/bin/chsh ./usr/bin/chsh ./usr/bin/chsh) ;;
       aliased) cp "${MOCKDIR}/extract_content" "${d}/bin/chsh"; members=(./bin/chsh) ;;
+      longlink)
+        # a symlink whose PAX link target is ~100 KB (a crafted record)
+        ln -s /bin/true "${d}/usr/bin/chsh"; members=(./usr/bin/chsh)
+        tar --format=pax --pax-option="linkpath=$(head -c 100000 /dev/zero | tr '\0' a)" \
+          -cf - -C "${d}" "${members[@]}"
+        rm -rf "${d}"
+        exit 0 ;;
     esac
     tar -cf - -C "${d}" "${members[@]}"
     rm -rf "${d}" ;;
@@ -112,6 +119,10 @@ MOCK
   chmod +x "${MOCKBIN}/ssh" "${MOCKBIN}/curl" "${MOCKBIN}/dpkg-deb"
 }
 
+# The alias section and alias_* diversion lines are only read when dpkg
+# registered a path other than the canonical one (the real target script only
+# emits them in that case). ALIAS_RESOLVES, ALIAS_DIVERT_PKG and
+# ALIAS_DIVERT_TRUE let a test change what the target reports about the alias.
 write_ownership() { # <live sha> [owner path] [live size]
   cat >"${MOCKDIR}/resp_ownership" <<EOF
 @@resolved
@@ -121,6 +132,11 @@ passwd: ${2:-/usr/bin/chsh}
 @@divert
 truename=/usr/bin/chsh
 listpackage=
+alias_truename=${ALIAS_DIVERT_TRUE-${2:-/usr/bin/chsh}}
+alias_listpackage=${ALIAS_DIVERT_PKG-}
+@@alias
+${2:-/usr/bin/chsh}
+${ALIAS_RESOLVES-/usr/bin/chsh}
 @@size
 ${3:-15}
 @@sha256
@@ -708,4 +724,153 @@ MOCK
   [[ "${status}" -eq 3 ]]
   [[ "$(reason_of)" == *"verify that path instead"* ]]
   [[ "$(reason_of)" == *"/usr/bin/aaa"* ]]
+}
+
+# ---- review round 3 ----
+
+@test "every --fsys-tarfile invocation carries --threads-max=1 (xz decoder fits the memory cap)" {
+  # source: no decoder dpkg-deb --fsys-tarfile call lacks --threads-max=1
+  run bash -c "grep -n -e 'decoder dpkg-deb --fsys-tarfile' '${TOOL}' | grep -v -e '--threads-max=1'"
+  [[ "${status}" -ne 0 ]]
+  run grep -c -e 'decoder dpkg-deb --fsys-tarfile --threads-max=1' "${TOOL}"
+  [[ "${output}" -ge 2 ]]
+  # runtime: every recorded --fsys-tarfile call had it
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  assert_success
+  grep -q -e '--fsys-tarfile' "${MOCKDIR}/dpkg-deb.log"
+  run bash -c "grep -e '--fsys-tarfile' '${MOCKDIR}/dpkg-deb.log' | grep -v -e '--threads-max=1'"
+  [[ "${status}" -ne 0 ]]
+}
+
+# Run the real OUTSIDE_SCRIPT text against mock pct, pvesm and debugfs. Only
+# the block-device test is relaxed (a regular file stands in for the device).
+run_outside_script() { # <debugfs cat mode>
+  local script="${BATS_TEST_TMPDIR}/outside.sh" bin="${BATS_TEST_TMPDIR}/obin"
+  mkdir -p "${bin}"
+  : >"${BATS_TEST_TMPDIR}/fakedev"
+  sed -n "/^OUTSIDE_SCRIPT='/,/^'\$/p" "${TOOL}" | sed -e "1s/^OUTSIDE_SCRIPT='//" -e '$d' \
+    | sed 's/\[ -b "\$dev" \]/[ -e "$dev" ]/' >"${script}"
+  cat >"${bin}/pct" <<'M'
+#!/usr/bin/env bash
+echo "rootfs: local:123/vm-123-disk-0.raw,size=8G"
+M
+  cat >"${bin}/pvesm" <<M
+#!/usr/bin/env bash
+echo "${BATS_TEST_TMPDIR}/fakedev"
+M
+  cat >"${bin}/debugfs" <<'M'
+#!/usr/bin/env bash
+echo "$2" >>"${MOCKDIR}/debugfs.log"
+case "$2" in
+  stat*) echo "Inode: 12   Type: regular    Mode:  0755   Flags: 0x80000"; echo "User:     0   Group:     0   Size: 15" ;;
+  cat*)
+    case "$(cat "${MOCKDIR}/debugfs_mode" 2>/dev/null)" in
+      partial) printf 'pristine'; exit 1 ;;
+      *) printf 'pristine-binary' ;;
+    esac ;;
+esac
+M
+  chmod +x "${bin}/pct" "${bin}/pvesm" "${bin}/debugfs"
+  echo "$1" >"${MOCKDIR}/debugfs_mode"
+  PATH="${bin}:${PATH}" run bash -s -- 123 /usr/bin/chsh <"${script}"
+}
+
+@test "outside view hashes and counts in a single debugfs read" {
+  run_outside_script full
+  assert_success
+  [[ "$(grep -c '^cat ' "${MOCKDIR}/debugfs.log")" -eq 1 ]]
+  [[ "$(sed -n '/^@@sha256$/{n;p}' <<<"${output}")" == "${PKG_SHA}" ]]
+  [[ "$(sed -n '/^@@bytes$/{n;p}' <<<"${output}")" == "15" ]]
+}
+
+@test "outside view: a partial single read is an @@error, never a hash paired with a count" {
+  run_outside_script partial
+  assert_success
+  [[ "${output}" == *"@@error"* ]]
+  [[ "${output}" != *"@@sha256"* ]]
+  [[ "$(grep -c '^cat ' "${MOCKDIR}/debugfs.log")" -eq 1 ]]
+}
+
+@test "usrmerge alias: a diversion on the alias path is package-unknown, exit 2" {
+  ALIAS_DIVERT_PKG=localpkg write_ownership "${PKG_SHA}" /bin/chsh
+  echo aliased >"${MOCKDIR}/tar_mode"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 2 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "package-unknown" ]]
+  [[ "$(reason_of)" == *"alias path /bin/chsh"*"diversion"* ]]
+  [[ ! -s "${MOCKDIR}/curl.log" ]]
+}
+
+@test "usrmerge alias: a diverted truename on the alias path is package-unknown, exit 2" {
+  ALIAS_DIVERT_TRUE=/bin/chsh.distrib write_ownership "${PKG_SHA}" /bin/chsh
+  echo aliased >"${MOCKDIR}/tar_mode"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 2 ]]
+  [[ "$(reason_of)" == *"diversion"* ]]
+}
+
+@test "usrmerge alias: alias that does not resolve to the canonical path is ignored, exit 2" {
+  ALIAS_RESOLVES=/opt/elsewhere/chsh write_ownership "${PKG_SHA}" /bin/chsh
+  echo aliased >"${MOCKDIR}/tar_mode"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 2 ]]
+  [[ "$(reason_of)" == *"alias is ignored"* ]]
+  [[ ! -s "${MOCKDIR}/curl.log" ]]
+}
+
+@test "ownership script only accepts an alias after readlink -f resolves it to the canonical path" {
+  run grep -F 'readlink -f -- "$alt"' "${TOOL}"
+  assert_success
+  run grep -F '[ "$alias_real" = "$r" ]' "${TOOL}"
+  assert_success
+}
+
+@test "crafted PAX link target (~100 KB) stays bounded: member is rejected as a link, exit 3" {
+  echo longlink >"${MOCKDIR}/tar_mode"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 3 ]]
+  [[ "$(reason_of)" == *"link or special entry"* ]]
+  [[ "${#output}" -lt 4000 ]]
+}
+
+@test "listing parser stage (cut and awk) runs under the bounded decoder wrapper and emits bounded fields" {
+  run grep -F 'decoder cut -b' "${TOOL}"
+  assert_success
+  run grep -F 'decoder awk' "${TOOL}"
+  assert_success
+  run grep -F 'substr(name, 1, 512)' "${TOOL}"
+  assert_success
+  run grep -F 'substr(tgt, 1, 256)' "${TOOL}"
+  assert_success
+}
+
+@test "limit overrides: out-of-range or malformed values are rejected with exit 3" {
+  for v in 0 -1 3601 abc 1.5 99999999; do
+    PV_DECODER_TIMEOUT="$v" run "${TOOL}" --host target1 --path /usr/bin/chsh
+    [[ "${status}" -eq 3 ]]
+    [[ "${output}" == *"PV_DECODER_TIMEOUT"* ]]
+  done
+  for v in 0 1024 262143 8388609 unlimited -5; do
+    PV_DECODER_VMEM_KB="$v" run "${TOOL}" --host target1 --path /usr/bin/chsh
+    [[ "${status}" -eq 3 ]]
+    [[ "${output}" == *"PV_DECODER_VMEM_KB"* ]]
+  done
+  [[ ! -s "${MOCKDIR}/ssh.log" ]]
+}
+
+@test "limit overrides: boundary values are accepted" {
+  PV_DECODER_TIMEOUT=1 PV_DECODER_VMEM_KB=262144 run "${TOOL}" --host target1 --path /usr/bin/chsh
+  [[ "${status}" -eq 4 ]]
+  PV_DECODER_TIMEOUT=3600 PV_DECODER_VMEM_KB=8388608 run "${TOOL}" --host target1 --path /usr/bin/chsh
+  [[ "${status}" -eq 4 ]]
+}
+
+@test "memory cap that cannot be applied fails closed with exit 3 instead of running uncapped" {
+  # Lower the hard limit below the requested cap so ulimit -v cannot be applied.
+  run bash -c "ulimit -S -H -v 300000; PV_DECODER_VMEM_KB=1048576 '${TOOL}' --host target1 --path /usr/bin/chsh"
+  [[ "${status}" -eq 3 ]]
+  [[ "${output}" == *"cannot apply the decoder memory cap"* ]]
+  [[ ! -s "${MOCKDIR}/ssh.log" ]]
+  run grep -F 'ulimit -v "$PV_DECODER_VMEM_KB" 2>/dev/null || true' "${TOOL}"
+  [[ "${status}" -ne 0 ]]
 }
