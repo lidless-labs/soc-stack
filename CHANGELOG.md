@@ -5,6 +5,7 @@ All notable changes to soc-stack are documented in this file. Format follows [Ke
 ## [Unreleased]
 
 ### Added
+- `tools/package-verify.sh`: read-only check that a file on a Debian or Ubuntu host (or Proxmox container, with an independent outside read) matches the file in its owning distro package; JSON or Markdown verdict with documented exit codes. See `docs/package-verify.md`.
 - ATT&CK Navigator coverage layer export: `scripts/lib/navigator.sh` + declarative map in `scripts/lib/data/attack-coverage.json`, written after install to `--navigator-out` (default `/root/soc-stack-navigator.json`); offline regenerator `tools/export-navigator-layer.sh`. Only deployed components and successfully integrated links contribute techniques.
 - `docs/archive/operations/operator-report-2026-06.md` and `operator-report-reconciliation-2026-08.md` (close stale June operator-center snapshot; [#18](https://github.com/lidless-labs/soc-stack/issues/18))
 - README adoption pass: prominent website link, live CI and release badges, a keyword-rich "What it does" section, a redacted result-JSON example block, and "Why not something else?" / "What soc-stack is not" sections
