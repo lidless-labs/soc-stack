@@ -49,7 +49,7 @@ out="" url=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -o) out="$2"; shift 2 ;;
-    --max-time | --max-filesize | --proto | -w) shift 2 ;;
+    --max-time | --max-filesize | --proto | --proto-redir | --max-redirs | -w) shift 2 ;;
     --) shift; url="$1"; shift ;;
     -*) shift ;;
     *) url="$1"; shift ;;
@@ -70,13 +70,39 @@ esac
 MOCK
   cat >"${MOCKBIN}/dpkg-deb" <<'MOCK'
 #!/usr/bin/env bash
+# Only the read-only modes the tool may use: -f (control fields) and
+# --fsys-tarfile (stream the data archive). Anything else fails the test.
 echo "$*" >>"${MOCKDIR}/dpkg-deb.log"
-[[ "$1" == "-x" ]] || { echo "unexpected dpkg-deb mode: $1" >&2; exit 2; }
-shift
-[[ "$1" == "--" ]] && shift
-dest="$2"
-mkdir -p "${dest}/usr/bin"
-cp "${MOCKDIR}/extract_content" "${dest}/usr/bin/chsh"
+case "$1" in
+  -f)
+    shift 2 # -f <deb>
+    for field in "$@"; do
+      case "${field}" in
+        Package) echo "Package: $(cat "${MOCKDIR}/ctrl_pkg" 2>/dev/null || echo passwd)" ;;
+        Version) echo "Version: $(cat "${MOCKDIR}/ctrl_ver" 2>/dev/null || echo 1:4.17.4-2)" ;;
+        Architecture) echo "Architecture: $(cat "${MOCKDIR}/ctrl_arch" 2>/dev/null || echo amd64)" ;;
+      esac
+    done ;;
+  --fsys-tarfile)
+    d="$(mktemp -d "${MOCKDIR}/tree.XXXXXX")"
+    mkdir -p "${d}/usr/bin"
+    mode="$(cat "${MOCKDIR}/tar_mode" 2>/dev/null || echo regular)"
+    case "${mode}" in
+      regular) cp "${MOCKDIR}/extract_content" "${d}/usr/bin/chsh"; members=(./usr/bin/chsh) ;;
+      symlink) ln -s /bin/true "${d}/usr/bin/chsh"; members=(./usr/bin/chsh) ;;
+      hardlink)
+        cp "${MOCKDIR}/extract_content" "${d}/usr/bin/aaa"
+        ln "${d}/usr/bin/aaa" "${d}/usr/bin/chsh"
+        members=(./usr/bin/aaa ./usr/bin/chsh) ;;
+      absent) cp "${MOCKDIR}/extract_content" "${d}/usr/bin/other"; members=(./usr/bin/other) ;;
+      dup)
+        cp "${MOCKDIR}/extract_content" "${d}/usr/bin/chsh"
+        members=(./usr/bin/chsh ./usr/bin/chsh) ;;
+    esac
+    tar -cf - -C "${d}" "${members[@]}"
+    rm -rf "${d}" ;;
+  *) echo "unexpected dpkg-deb mode: $1" >&2; exit 2 ;;
+esac
 MOCK
   chmod +x "${MOCKBIN}/ssh" "${MOCKBIN}/curl" "${MOCKBIN}/dpkg-deb"
 }
@@ -122,6 +148,8 @@ write_outside() { # <sha>
   cat >"${MOCKDIR}/resp_outside" <<EOF
 @@kind
 block
+@@type
+regular
 @@size
 15
 @@sha256
@@ -130,10 +158,13 @@ $1
 EOF
 }
 
-@test "match: live equals package file, JSON output, exit 0" {
+# Intentionally changed from v1: with no outside view the result is no longer
+# "match" (exit 0); it is "match-unverified" (exit 4, trust self-reported).
+@test "match-unverified: inside equals package but no outside view, exit 4" {
   run "${TOOL}" --host target1 --path /usr/bin/chsh
-  assert_success
-  [[ "$(jq -r .verdict <<<"${output}")" == "match" ]]
+  [[ "${status}" -eq 4 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "match-unverified" ]]
+  [[ "$(jq -r .trust <<<"${output}")" == "self-reported" ]]
   [[ "$(jq -r .package <<<"${output}")" == "passwd" ]]
   [[ "$(jq -r .version <<<"${output}")" == "1:4.17.4-2" ]]
   [[ "$(jq -r .arch <<<"${output}")" == "amd64" ]]
@@ -148,15 +179,18 @@ EOF
 @test "match with outside view: all three hashes equal, exit 0" {
   run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
   assert_success
+  [[ "$(jq -r .verdict <<<"${output}")" == "match" ]]
+  [[ "$(jq -r .trust <<<"${output}")" == "outside-verified" ]]
   [[ "$(jq -r .sha256_outside <<<"${output}")" == "${PKG_SHA}" ]]
   [[ "$(jq -r .inputs.ctid <<<"${output}")" == "123" ]]
   grep -q outside "${MOCKDIR}/ssh.markers"
 }
 
 @test "markdown format emits a compact block with the verdict" {
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --format md
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --format md
   assert_success
   assert_output --partial "verdict: **match**"
+  assert_output --partial "trust: **outside-verified**"
   assert_output --partial "${PKG_SHA}"
   assert_output --partial "not-verified"
 }
@@ -234,7 +268,7 @@ MOCK
 
 @test "snapshot.debian.org fallback is used when the pool no longer has the version" {
   echo 404 >"${MOCKDIR}/pool_code"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
   assert_success
   grep -q 'snapshot.debian.org/file/' "${MOCKDIR}/curl.log"
   [[ "$(jq -r .deb_url <<<"${output}")" == https://snapshot.debian.org/file/* ]]
@@ -256,10 +290,13 @@ MOCK
   [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
 }
 
-@test "dpkg-deb is only ever called with -x (never installs or runs scripts)" {
-  run "${TOOL}" --host target1 --path /usr/bin/chsh
+# Intentionally changed from v1 (which asserted "-x" only): the tool no longer
+# extracts to disk, so the only allowed modes are -f and --fsys-tarfile.
+@test "dpkg-deb is only ever called with -f or --fsys-tarfile (never extracts, installs or runs scripts)" {
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
   assert_success
-  run grep -v '^-x ' "${MOCKDIR}/dpkg-deb.log"
+  [[ -s "${MOCKDIR}/dpkg-deb.log" ]]
+  run grep -Ev '^(-f |--fsys-tarfile )' "${MOCKDIR}/dpkg-deb.log"
   assert_failure
 }
 
@@ -309,7 +346,7 @@ MOCK
 }
 
 @test "temp dir is removed after match, mismatch, and error runs" {
-  run "${TOOL}" --host target1 --path /usr/bin/chsh
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
   assert_success
   [[ -z "$(ls -A "${RUNTMP}")" ]]
   write_ownership "$(sha_of tampered)"
@@ -330,8 +367,172 @@ MOCK
 
 @test "tool source contains no state-changing commands" {
   local bad
-  for bad in 'pct mount' 'debugfs -w' 'apt-get install' 'dpkg -i' 'apt install' 'dpkg-deb -i'; do
+  for bad in 'pct mount' 'debugfs -w' 'apt-get install' 'dpkg -i' 'apt install' 'dpkg-deb -i' 'dpkg-deb -x' 'dpkg-deb -e'; do
     run grep -F -- "${bad}" "${TOOL}"
     [[ "${status}" -ne 0 ]] || { echo "found: ${bad}"; false; }
   done
+}
+
+# ---- trust model (Daybreak review of PR 25) ----
+
+@test "match requires an outside view: no outside view never exits 0" {
+  run "${TOOL}" --host target1 --path /usr/bin/chsh
+  [[ "${status}" -ne 0 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" != "match" ]]
+}
+
+@test "outside hash is taken from the caller path, never the target-supplied resolved path" {
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  assert_success
+  # the outside script is given the caller-supplied path as its second argument
+  grep -Eq 'sh -s -- 123 /usr/bin/chsh$' "${MOCKDIR}/ssh.log"
+}
+
+@test "non-canonical path (target resolves it elsewhere) is an error, exit 3" {
+  run "${TOOL}" --host target1 --path /bin/chsh
+  [[ "${status}" -eq 3 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
+  [[ "$(jq -r .reason <<<"${output}")" == "pass the canonical path (target resolves it to /usr/bin/chsh)" ]]
+  [[ ! -s "${MOCKDIR}/curl.log" ]]
+}
+
+@test "outside stat shows a symlink (not a regular file): error, exit 3" {
+  sed -i 's/^regular$/symlink/' "${MOCKDIR}/resp_outside"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 3 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
+  [[ "$(jq -r .reason <<<"${output}")" == *"not a regular file"* ]]
+}
+
+@test "directory-backed rootfs: outside view is null with a reason, match-unverified, exit 4" {
+  printf '@@kind\ndir\n@@end\n' >"${MOCKDIR}/resp_outside"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 4 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "match-unverified" ]]
+  [[ "$(jq -r .trust <<<"${output}")" == "self-reported" ]]
+  [[ "$(jq -r .sha256_outside <<<"${output}")" == "null" ]]
+  [[ "$(jq -r .sha256_outside_reason <<<"${output}")" == "unsupported rootfs type (directory-backed); outside view not taken" ]]
+}
+
+@test "outside script never reads a directory-backed rootfs and never writes" {
+  run grep -nE 'sha256sum -- "\$dev|stat -c' "${TOOL}"
+  assert_failure
+}
+
+@test "outside differs from package while inside matches: mismatch, exit 1, trust outside-verified" {
+  write_outside "$(sha_of lie-from-hypervisor)"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 1 ]]
+  [[ "$(jq -r .trust <<<"${output}")" == "outside-verified" ]]
+}
+
+@test ".deb control fields differing from the claimed package, version or arch: error, exit 3" {
+  echo other-pkg >"${MOCKDIR}/ctrl_pkg"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 3 ]]
+  [[ "$(jq -r .reason <<<"${output}")" == *"control fields"* ]]
+  rm "${MOCKDIR}/ctrl_pkg"
+  echo 9:9.9-9 >"${MOCKDIR}/ctrl_ver"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 3 ]]
+  rm "${MOCKDIR}/ctrl_ver"
+  echo arm64 >"${MOCKDIR}/ctrl_arch"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 3 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
+}
+
+@test "package member is a symlink: error, exit 3" {
+  echo symlink >"${MOCKDIR}/tar_mode"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 3 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
+  [[ "$(jq -r .reason <<<"${output}")" == *"link"* ]]
+}
+
+@test "package member is a hardlink: error, exit 3" {
+  echo hardlink >"${MOCKDIR}/tar_mode"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 3 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
+  [[ "$(jq -r .reason <<<"${output}")" == *"link"* ]]
+}
+
+@test "package without the member is package-unknown; duplicate members are an error" {
+  echo absent >"${MOCKDIR}/tar_mode"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 2 ]]
+  echo dup >"${MOCKDIR}/tar_mode"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 3 ]]
+}
+
+@test "nothing is extracted to disk: no files appear under the work area during a run" {
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  assert_success
+  # the mock builds its trees under MOCKDIR and removes them; the runner temp is clean
+  [[ -z "$(ls -A "${RUNTMP}")" ]]
+}
+
+@test "download is restricted to https with a size cap and timeout" {
+  run grep -F -- "--proto '=https' --proto-redir '=https'" "${TOOL}"
+  assert_success
+  run grep -F -- "--max-filesize 209715200" "${TOOL}"
+  assert_success
+  run grep -F -- "--max-time" "${TOOL}"
+  assert_success
+  run "${TOOL}" --host t --path /usr/bin/chsh --mirror 'http://mirror.example.org/debian'
+  [[ "${status}" -eq 3 ]]
+}
+
+# ---- hostile target strings ----
+
+hostile_divert() {
+  # first line carries Markdown/HTML metacharacters and a CR; later lines
+  # try to forge table rows (only the first line of a section is used).
+  printf '@@resolved\n/usr/bin/chsh\n@@owner\npasswd: /usr/bin/chsh\n@@divert\ntruename=/usr/bin/chsh\n' >"${MOCKDIR}/resp_ownership"
+  printf 'listpackage=evil|`pkg`**bold**[x](http://e.example)<img src=x>\r\033[31m\n| injected | row |\n@@sha256\n%s\n@@end\n' "${PKG_SHA}" >>"${MOCKDIR}/resp_ownership"
+}
+
+@test "markdown: hostile target text is escaped, control chars stripped, no forged rows" {
+  hostile_divert
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --format md
+  [[ "${status}" -eq 2 ]]
+  # no raw metacharacters survive from the hostile value
+  [[ "${output}" != *'evil|'* ]]
+  ! grep -Eq '(^|[^\\])[<>]' <<<"${output}"
+  [[ "${output}" != *'[x](http'* ]]
+  [[ "${output}" != *'**bold**'* ]]
+  [[ "${output}" == *'evil\|\`pkg\`\*\*bold\*\*\[x\]'* ]]
+  # no control characters at all
+  ! grep -q $'\r' <<<"${output}"
+  ! grep -q $'\033' <<<"${output}"
+  # the forged row did not become a line of its own
+  ! grep -q '^| injected' <<<"${output}"
+}
+
+@test "markdown: long target values are truncated" {
+  long="$(printf 'a%.0s' $(seq 1 600))"
+  printf '@@error\n%s\n' "${long}" >"${MOCKDIR}/resp_ownership"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --format md
+  [[ "${status}" -eq 3 ]]
+  [[ "${#output}" -lt 1500 ]]
+  [[ "${output}" != *"${long}"* ]]
+}
+
+@test "markdown: hostile apt origin suite is escaped" {
+  sed -i 's#trixie/main amd64#tri|x`i/m*in amd64#' "${MOCKDIR}/resp_meta"
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --format md
+  assert_success
+  [[ "${output}" != *'tri|x'* ]]
+  [[ "${output}" == *'tri\|x\`i/m\*in'* ]]
+}
+
+@test "json: stays valid with hostile target strings, reason preserved verbatim" {
+  hostile_divert
+  run "${TOOL}" --host target1 --path /usr/bin/chsh
+  [[ "${status}" -eq 2 ]]
+  jq -e . <<<"${output}" >/dev/null
+  [[ "$(jq -r .reason <<<"${output}")" == *'evil|`pkg`**bold**'* ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "package-unknown" ]]
 }
