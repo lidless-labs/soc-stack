@@ -11,10 +11,11 @@
 #       [--pve-host <ssh-target> --ctid <id>] [--inside-via-pct]
 #       [--format json|md] [--mirror <url>]
 #
-# Exit codes: 0 match, 1 mismatch, 2 package-unknown, 3 error/usage.
+# Exit codes: 0 match (outside-verified), 1 mismatch, 2 package-unknown,
+# 3 error/usage, 4 match-unverified (self-reported only).
 set -euo pipefail
 
-TOOL_VERSION="1.0.0"
+TOOL_VERSION="1.1.0"
 
 usage() {
   cat <<EOF
@@ -22,49 +23,60 @@ Usage: $(basename "$0") --host <ssh-target> --path </abs/file> [options]
 
 Verify that a file on a Debian/Ubuntu host is byte-identical to the file in the
 distro package that owns it. Strictly read-only on every remote; the package is
-downloaded to a private temp dir on this machine, extracted with dpkg-deb -x as
-untrusted data, and never installed or executed.
+downloaded to a private temp dir on this machine and the one needed file is
+hashed by streaming it out of the archive. Nothing is extracted to disk,
+installed, or executed.
 
 Required:
   --host <ssh-target>   ssh destination of the machine that holds the file.
                         Optional when --inside-via-pct is used.
-  --path </abs/file>    absolute path to verify. Allowed characters:
-                        A-Z a-z 0-9 . _ + / - ; no '..'.
+  --path </abs/file>    absolute CANONICAL path to verify (no symlinked
+                        components; Debian /bin is a symlink, so pass
+                        /usr/bin/...). Allowed characters: A-Z a-z 0-9 . _ + / -
+                        ; no '..'. A non-canonical path is an error.
 
 Optional:
   --pve-host <target>   ssh destination of the Proxmox host that runs the
                         container. With --ctid, adds an "outside" read of the
                         container root filesystem that does not trust the
-                        container's own tools.
+                        container's own tools. Block-device rootfs only; a
+                        directory-backed rootfs gives no outside view.
   --ctid <id>           container id (digits). Requires --pve-host.
   --inside-via-pct      run the inside commands in the container with
                         'pct exec' on --pve-host instead of ssh to --host
                         (for containers without their own sshd).
   --format json|md      output format (default json). md is a compact block
                         for a case comment.
-  --mirror <url>        archive base URL (default: derived from the target's
-                        apt origin for debian/ubuntu archives; other origins
-                        yield package-unknown).
+  --mirror <url>        https archive base URL (default: derived from the
+                        target's apt origin for debian/ubuntu archives; other
+                        origins yield package-unknown).
   --help                show this help
   --version             show the tool version
 
 Remote commands (all read-only): readlink, stat, sha256sum, dpkg -S,
 dpkg-divert, dpkg-query, apt-cache show/policy. On the Proxmox host: pct config,
-pvesm path, debugfs (read-only), sha256sum. It never mounts or writes.
+pvesm path, debugfs (read-only, no -w). It never mounts or writes.
 
 Verdicts and exit codes:
-  match            0  live == package file (and outside == package file)
+  match            0  outside (hypervisor) hash == inside hash == package
+                      file hash. Trust: outside-verified.
+  match-unverified 4  inside hash == package file hash but there is no
+                      independent outside view. Trust: self-reported, resting
+                      entirely on the target's honesty.
   mismatch         1  any of the compared hashes differ
   package-unknown  2  not owned by a package, diverted, version not in the
                       archive, or unsupported (third-party) origin
-  error            3  usage error, ssh failure, download or hash-metadata
-                      failure (including .deb sha256 != target apt SHA256)
+  error            3  usage error, ssh failure, non-canonical path, download or
+                      metadata failure (.deb sha256 != target apt SHA256, or
+                      .deb control fields != claimed package), outside file
+                      is not a regular file, or the package member is a link
 
 Note: archive_signature is always "not-verified". Trust in the .deb rests on
-the target's apt-verified metadata (SHA256 from its GPG-checked lists) plus the
-independent outside read. Independent InRelease checking needs a Debian
-keyring on the runner; this tool never installs one. A block-device read of a
-running container can lag the page cache.
+the target's apt-verified metadata (SHA256 from its GPG-checked lists), which a
+compromised target can forge; only the outside view is independent. Independent
+InRelease checking needs a Debian keyring on the runner; this tool never
+installs one. A block-device read of a running container can lag the page
+cache.
 EOF
 }
 
@@ -99,7 +111,7 @@ valid_path() {
 valid_target() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._@:-]*$ ]]; }
 valid_pkg() { [[ "$1" =~ ^[a-z0-9][a-z0-9.+-]*(:[a-z0-9-]+)?$ ]]; }
 valid_sha() { [[ "$1" =~ ^[0-9a-f]{64}$ ]]; }
-valid_mirror() { [[ "$1" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~+/-]*)?$ ]]; }
+valid_mirror() { [[ "$1" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~+/-]*)?$ ]]; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -130,7 +142,7 @@ if [[ "$INSIDE_VIA_PCT" -eq 1 ]]; then
 else
   [[ -n "$HOST" ]] || fail_usage "--host is required"
 fi
-if [[ -n "$MIRROR" ]]; then valid_mirror "$MIRROR" || fail_usage "--mirror must be an http(s) URL"; MIRROR="${MIRROR%/}"; fi
+if [[ -n "$MIRROR" ]]; then valid_mirror "$MIRROR" || fail_usage "--mirror must be an https URL"; MIRROR="${MIRROR%/}"; fi
 
 # ---- output ----
 emit_json() {
@@ -158,6 +170,7 @@ emit_json() {
     --argjson outside "$outside_json" \
     --argjson outside_reason "$outside_reason_json" \
     --arg verdict "$VERDICT" \
+    --arg trust "$(trust_level)" \
     --arg reason "$REASON" \
     '
     def nn: if . == "" then null else . end;
@@ -180,34 +193,59 @@ emit_json() {
       sha256_outside: $outside,
       sha256_outside_reason: $outside_reason,
       verdict: $verdict,
+      trust: $trust,
       reason: ($reason | nn),
+      trust_note: "outside-verified means an independent hypervisor read of the caller-supplied path agrees with the package file. self-reported means every fact came from the target itself and rests entirely on the target honesty.",
       archive_signature: "not-verified",
-      archive_signature_note: "Trust in the .deb rests on the target apt-verified metadata (SHA256 from its GPG-checked lists) plus the independent outside read. Independent InRelease GPG checking is not done: the runner has no Debian keyring and installing debian-archive-keyring needs the owner approval.",
+      archive_signature_note: "The .deb is bound to the SHA256 the target reports from its apt lists, which a compromised target can forge. Independent InRelease/Packages GPG verification is not done: the runner has no Debian keyring and installing debian-archive-keyring needs the owner approval.",
       outside_note: "A block-device read of a running container can lag the page cache."
     }'
 }
 
-emit_md() {
-  local outside="${SHA_OUTSIDE:-n/a}"
-  [[ -z "$SHA_OUTSIDE" && -n "$OUTSIDE_REASON" ]] && outside="n/a (${OUTSIDE_REASON})"
-  cat <<EOF
-**package-verify ${TOOL_VERSION}** | verdict: **${VERDICT}**$([[ -n "$REASON" ]] && printf ' (%s)' "$REASON")
+# Markdown rendering of target-controlled text. Keep printable ASCII only
+# (drops control characters, newlines, and non-ASCII look-alikes), truncate,
+# then backslash-escape Markdown and HTML significant characters.
+md_clean() { # md_clean <text> [max-length]  (no escaping)
+  printf '%s' "$1" | LC_ALL=C tr -cd '\040-\176' | head -c "${2:-200}"
+}
+md_esc() { # md_esc <text> [max-length]
+  md_clean "$1" "${2:-200}" | sed -e 's/[][\\`*_|<>&#~!(){}]/\\&/g'
+}
+# Code-span variant: no escaping is possible inside backticks, so drop the
+# characters that could end the span or the table cell instead.
+md_code() { # md_code <text> [max-length]
+  md_clean "$1" "${2:-200}" | tr -d '`|'
+}
 
+emit_md() {
+  local outside="${SHA_OUTSIDE:-n/a}" host_label path_cell
+  host_label="${HOST:-${PVE_HOST}/ct${CTID}}"
+  [[ -z "$SHA_OUTSIDE" && -n "$OUTSIDE_REASON" ]] && outside="n/a ($(md_esc "$OUTSIDE_REASON"))"
+  path_cell="\`$(md_code "$FPATH")\`"
+  [[ -n "$RESOLVED" && "$RESOLVED" != "$FPATH" ]] && path_cell+=" -> \`$(md_code "$RESOLVED")\`"
+  printf '**package-verify %s** | verdict: **%s** | trust: **%s**' "$TOOL_VERSION" "$(md_esc "$VERDICT")" "$(trust_level)"
+  [[ -n "$REASON" ]] && printf ' (%s)' "$(md_esc "$REASON")"
+  printf '\n\n'
+  cat <<EOF
 | Field | Value |
 | --- | --- |
-| Host | \`${HOST:-${PVE_HOST}/ct${CTID}}\` |
-| Path | \`${FPATH}\`$([[ -n "$RESOLVED" && "$RESOLVED" != "$FPATH" ]] && printf ' -> `%s`' "$RESOLVED") |
-| Package | \`${PKG:-n/a}\` ${VERSION:-} ${ARCH:-} |
-| Origin | ${ORIGIN:-n/a} |
-| .deb | ${DEB_URL:-n/a} |
-| .deb sha256 | \`${DEB_SHA:-n/a}\` (matches target apt metadata: ${DEB_META_MATCH}) |
-| sha256 inside | \`${SHA_INSIDE:-n/a}\` |
-| sha256 package file | \`${SHA_EXTRACTED:-n/a}\` |
-| sha256 outside | \`${outside}\` |
+| Host | \`$(md_code "$host_label")\` |
+| Path | ${path_cell} |
+| Package | \`$(md_code "${PKG:-n/a}")\` $(md_esc "${VERSION:-}") $(md_esc "${ARCH:-}") |
+| Origin | $(md_esc "${ORIGIN:-n/a}") |
+| .deb | $(md_esc "${DEB_URL:-n/a}") |
+| .deb sha256 | \`$(md_code "${DEB_SHA:-n/a}" 64)\` (matches target apt metadata: $(md_esc "${DEB_META_MATCH}")) |
+| sha256 inside | \`$(md_code "${SHA_INSIDE:-n/a}" 64)\` |
+| sha256 package file | \`$(md_code "${SHA_EXTRACTED:-n/a}" 64)\` |
+| sha256 outside | ${outside} |
 | Checked (UTC) | $(date -u +%Y-%m-%dT%H:%M:%SZ) |
 
-Archive signature: not-verified. Trust in the .deb rests on the target's apt-verified metadata plus the independent outside read; InRelease GPG checking is not done (no Debian keyring on the runner). A block-device read of a running container can lag the page cache.
+Trust: outside-verified means an independent hypervisor read of the caller-supplied path agrees with the package file; self-reported rests entirely on the target's honesty. Archive signature: not-verified (the .deb is bound to the SHA256 the target reports from its apt lists, which a compromised target can forge; InRelease GPG checking is not done because the runner has no Debian keyring). A block-device read of a running container can lag the page cache.
 EOF
+}
+
+trust_level() {
+  if [[ -n "$SHA_OUTSIDE" ]]; then echo "outside-verified"; else echo "self-reported"; fi
 }
 
 finish() {
@@ -218,6 +256,7 @@ finish() {
     match) exit 0 ;;
     mismatch) exit 1 ;;
     package-unknown) exit 2 ;;
+    match-unverified) exit 4 ;;
     *) exit 3 ;;
   esac
 }
@@ -293,16 +332,15 @@ volid=${line#rootfs: }
 volid=${volid%%,*}
 dev=$(pvesm path "$volid" 2>/dev/null) || { echo "@@error"; echo "pvesm path failed"; exit 0; }
 echo "@@kind"
-if [ -d "$dev" ]; then
-  echo "dir"
-  echo "@@size"; stat -c %s -- "$dev$f" 2>/dev/null
-  echo "@@sha256"; sha256sum -- "$dev$f" 2>/dev/null | cut -d" " -f1
-elif [ -b "$dev" ] || [ -f "$dev" ]; then
+if [ -b "$dev" ]; then
   echo "block"
-  echo "@@size"; debugfs -R "stat $f" "$dev" 2>/dev/null | sed -n "s/^.*Size: \([0-9][0-9]*\).*/\1/p" | head -n 1
-  echo "@@sha256"; debugfs -R "cat $f" "$dev" 2>/dev/null | sha256sum | cut -d" " -f1
+  echo "@@type"; timeout 60 debugfs -R "stat $f" "$dev" 2>/dev/null | sed -n "s/^.*Type: *\([a-z]*\).*/\1/p" | head -n 1
+  echo "@@size"; timeout 60 debugfs -R "stat $f" "$dev" 2>/dev/null | sed -n "s/^.*Size: \([0-9][0-9]*\).*/\1/p" | head -n 1
+  echo "@@sha256"; timeout 300 debugfs -R "cat $f" "$dev" 2>/dev/null | sha256sum | cut -d" " -f1
+elif [ -d "$dev" ]; then
+  echo "dir"
 else
-  echo "@@error"; echo "unsupported rootfs volume"; exit 0
+  echo "other"
 fi
 echo "@@end"
 '
@@ -318,6 +356,9 @@ fi
 
 RESOLVED="$(section resolved "$own_out" | head -n 1)"
 valid_path "$RESOLVED" || finish error "target returned an unsafe resolved path"
+if [[ "$RESOLVED" != "$FPATH" ]]; then
+  finish error "pass the canonical path (target resolves it to ${RESOLVED})"
+fi
 SHA_INSIDE="$(section sha256 "$own_out" | head -n 1)"
 valid_sha "$SHA_INSIDE" || finish error "target returned an invalid sha256 for the live file"
 
@@ -382,14 +423,13 @@ ORIGIN="${ORIGIN_URL:-$MIRROR} ${ORIGIN_SUITE:-}"
 ORIGIN="${ORIGIN% }"
 DEB_URL="${MIRROR}/${FILENAME}"
 
-# ---- 3. runner: download + hash + extract (untrusted data, never executed) ----
+# ---- 3. runner: download + stream-hash one member (untrusted data, never executed) ----
 WORK="$(mktemp -d)" || finish error "mktemp failed"
 DEB="${WORK}/package.deb"
-EXTRACT="${WORK}/x"
-mkdir -p "$EXTRACT"
 
 fetch() { # fetch <url> <out> -> prints http code
-  curl -sSL --proto '=http,https' --max-time 300 --max-filesize 209715200 -o "$2" -w '%{http_code}' -- "$1" 2>/dev/null || true
+  curl -sSL --proto '=https' --proto-redir '=https' --max-redirs 5 --max-time 300 --max-filesize 209715200 \
+    -o "$2" -w '%{http_code}' -- "$1" 2>/dev/null || true
 }
 
 code="$(fetch "$DEB_URL" "$DEB")"
@@ -421,41 +461,68 @@ if [[ "$DEB_SHA" != "$APT_SHA" ]]; then
 fi
 DEB_META_MATCH="true"
 
-dpkg-deb -x -- "$DEB" "$EXTRACT" >/dev/null 2>&1 || finish error "dpkg-deb -x failed on the downloaded package"
-
-ext_file=""
-for cand in "$RESOLVED" "$FPATH"; do
-  if [[ -f "${EXTRACT}${cand}" && ! -L "${EXTRACT}${cand}" ]]; then ext_file="${EXTRACT}${cand}"; break; fi
-done
-if [[ -z "$ext_file" ]]; then
-  finish package-unknown "package ${PKG}=${VERSION} does not contain a regular file at ${RESOLVED} (generated at install time or shipped as a symlink)"
+# The archive must be the package the target claimed (name, version, arch).
+ctrl="$(dpkg-deb -f "$DEB" Package Version Architecture 2>/dev/null)" || finish error "dpkg-deb -f failed on the downloaded package"
+c_pkg="$(sed -n 's/^Package: //p' <<<"$ctrl" | head -n 1)"
+c_ver="$(sed -n 's/^Version: //p' <<<"$ctrl" | head -n 1)"
+c_arch="$(sed -n 's/^Architecture: //p' <<<"$ctrl" | head -n 1)"
+if [[ "$c_pkg" != "$PKG" || "$c_ver" != "$VERSION" || "$c_arch" != "$ARCH" ]]; then
+  finish error "downloaded .deb control fields do not match the target claim (package, version or architecture); not trusting it"
 fi
-SHA_EXTRACTED="$(sha256sum -- "$ext_file" | cut -d' ' -f1)"
 
-# ---- 4. outside view (Proxmox host, read-only) ----
+# Locate the member without extracting anything: exactly one entry named
+# ./<FPATH>, and it must be a regular file (tar type '-'), not a link.
+MEMBER=".${FPATH}"
+listing="$(timeout 120 dpkg-deb --fsys-tarfile "$DEB" 2>/dev/null | timeout 120 tar -tvf - 2>/dev/null)" || finish error "could not list the downloaded package contents"
+members="$(awk -v m="$MEMBER" '
+  { rest=$0; if (!sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "", rest)) next
+    if (rest == m || index(rest, m " -> ") == 1 || index(rest, m " link to ") == 1) print substr($0, 1, 1) }
+' <<<"$listing")"
+n_members=0
+[[ -z "$members" ]] || n_members="$(wc -l <<<"$members")"
+if [[ "$n_members" -eq 0 ]]; then
+  finish package-unknown "package ${PKG}=${VERSION} does not contain ${FPATH} (generated at install time)"
+fi
+if [[ "$n_members" -ne 1 ]]; then
+  finish error "package ${PKG}=${VERSION} has ${n_members} entries for ${FPATH}; refusing to guess"
+fi
+if [[ "$members" != "-" ]]; then
+  finish error "package ${PKG}=${VERSION} ships ${FPATH} as a link or special entry, not a regular file"
+fi
+SHA_EXTRACTED="$(timeout 300 dpkg-deb --fsys-tarfile "$DEB" 2>/dev/null | timeout 300 tar -xOf - "$MEMBER" 2>/dev/null | sha256sum | cut -d' ' -f1)" \
+  || finish error "could not stream the package file out of the archive"
+valid_sha "$SHA_EXTRACTED" || finish error "could not hash the package file"
+
+# ---- 4. outside view (Proxmox host, read-only, caller-supplied path only) ----
 if [[ -n "$PVE_HOST" && -n "$CTID" ]]; then
-  if out_raw="$(run_pve "$OUTSIDE_SCRIPT" "$CTID" "$RESOLVED" 2>/dev/null)" && [[ "$out_raw" == *"@@end"* || "$out_raw" == *"@@error"* ]]; then
+  if out_raw="$(run_pve "$OUTSIDE_SCRIPT" "$CTID" "$FPATH" 2>/dev/null)" && [[ "$out_raw" == *"@@end"* || "$out_raw" == *"@@error"* ]]; then
     if [[ "$out_raw" == *"@@error"* ]]; then
-      OUTSIDE_REASON="$(section error "$out_raw" | head -n 1)"
-    else
-      o_sha="$(section sha256 "$out_raw" | head -n 1)"
-      o_size="$(section size "$out_raw" | head -n 1)"
-      in_size_ok=1
-      if [[ -z "$o_size" ]]; then
-        in_size_ok=0
-        OUTSIDE_REASON="outside read could not stat the file (missing from the volume or read failed)"
-      fi
-      if [[ "$in_size_ok" -eq 1 ]] && valid_sha "$o_sha"; then
-        SHA_OUTSIDE="$o_sha"
-      elif [[ -z "$OUTSIDE_REASON" ]]; then
-        OUTSIDE_REASON="outside read returned no valid sha256"
-      fi
+      finish error "outside view requested but unavailable: $(section error "$out_raw" | head -n 1)"
     fi
+    o_kind="$(section kind "$out_raw" | head -n 1)"
+    case "$o_kind" in
+      block)
+        o_type="$(section type "$out_raw" | head -n 1)"
+        o_size="$(section size "$out_raw" | head -n 1)"
+        o_sha="$(section sha256 "$out_raw" | head -n 1)"
+        if [[ -z "$o_type" || -z "$o_size" ]]; then
+          finish error "outside view requested but the file could not be stat'ed on the volume (missing or read failed)"
+        fi
+        if [[ "$o_type" != "regular" ]]; then
+          finish error "outside view: ${FPATH} is not a regular file on the container volume (type: $(md_clean "$o_type" 20)); pass the canonical path"
+        fi
+        valid_sha "$o_sha" || finish error "outside view requested but returned no valid sha256"
+        SHA_OUTSIDE="$o_sha"
+        ;;
+      dir)
+        OUTSIDE_REASON="unsupported rootfs type (directory-backed); outside view not taken"
+        ;;
+      *)
+        OUTSIDE_REASON="unsupported rootfs type (not a block device); outside view not taken"
+        ;;
+    esac
   else
-    OUTSIDE_REASON="ssh to the Proxmox host failed or returned an incomplete response"
-  fi
-  if [[ -z "$SHA_OUTSIDE" ]]; then
-    finish error "outside view requested but unavailable: ${OUTSIDE_REASON}"
+    finish error "outside view requested but unavailable: ssh to the Proxmox host failed or returned an incomplete response"
   fi
 else
   OUTSIDE_REASON="no --pve-host/--ctid given (no independent outside view)"
@@ -468,4 +535,7 @@ fi
 if [[ -n "$SHA_OUTSIDE" && "$SHA_OUTSIDE" != "$SHA_EXTRACTED" ]]; then
   finish mismatch "outside read differs from the package file"
 fi
-finish match ""
+if [[ -n "$SHA_OUTSIDE" ]]; then
+  finish match ""
+fi
+finish match-unverified "no independent outside view: ${OUTSIDE_REASON}; the result is self-reported by the target"
