@@ -62,6 +62,14 @@ case "${url}" in
     printf '200' ;;
   *snapshot.debian.org/file/*)
     cp "${MOCKDIR}/deb_content" "${out}"; printf '200' ;;
+  */dists/*/InRelease)
+    code="$(cat "${MOCKDIR}/ir_code" 2>/dev/null || echo 404)"
+    [[ "${code}" == 200 ]] && cp "${MOCKDIR}/InRelease" "${out}"
+    printf '%s' "${code}" ;;
+  */dists/*/Packages.xz | */dists/*/by-hash/SHA256/*)
+    code="$(cat "${MOCKDIR}/idx_code" 2>/dev/null || echo 404)"
+    [[ "${code}" == 200 ]] && cp "${MOCKDIR}/Packages.xz" "${out}"
+    printf '%s' "${code}" ;;
   *)
     code="$(cat "${MOCKDIR}/pool_code" 2>/dev/null || echo 200)"
     [[ "${code}" == 200 ]] && cp "${MOCKDIR}/deb_content" "${out}"
@@ -504,7 +512,12 @@ MOCK
 @test "download is restricted to https with a size cap and timeout" {
   run grep -F -- "--proto '=https' --proto-redir '=https'" "${TOOL}"
   assert_success
-  run grep -F -- "--max-filesize 209715200" "${TOOL}"
+  run grep -F -- '--max-filesize "${3:-209715200}"' "${TOOL}"
+  assert_success
+  # archive check caps: InRelease 1 MiB, index 128 MiB
+  run grep -F -- '1048576' "${TOOL}"
+  assert_success
+  run grep -F -- '134217728' "${TOOL}"
   assert_success
   run grep -F -- "--max-time" "${TOOL}"
   assert_success
@@ -873,4 +886,265 @@ M
   [[ ! -s "${MOCKDIR}/ssh.log" ]]
   run grep -F 'ulimit -v "$PV_DECODER_VMEM_KB" 2>/dev/null || true' "${TOOL}"
   [[ "${status}" -ne 0 ]]
+}
+
+# ---------------------------------------------------------------------------
+# Archive signature check (v1.4.0). A throwaway signing key is generated at test
+# time; its public half is exported as the "archive keyring". Nothing here uses
+# the system keyring or the network.
+# ---------------------------------------------------------------------------
+
+setup_file() {
+  export GPGDIR_A="${BATS_FILE_TMPDIR}/gpgA" GPGDIR_B="${BATS_FILE_TMPDIR}/gpgB"
+  local d
+  for d in "${GPGDIR_A}" "${GPGDIR_B}"; do
+    mkdir -m 700 "${d}"
+    gpg --homedir "${d}" --batch --pinentry-mode loopback --passphrase '' \
+      --quick-gen-key "pv-test-$(basename "${d}") <pv@example.invalid>" ed25519 sign never >/dev/null 2>&1
+  done
+  gpg --homedir "${GPGDIR_A}" --export >"${BATS_FILE_TMPDIR}/keyA.gpg"
+  gpg --homedir "${GPGDIR_B}" --export >"${BATS_FILE_TMPDIR}/keyB.gpg"
+  FPR_A="$(gpg --homedir "${GPGDIR_A}" --with-colons --list-keys | awk -F: '/^fpr/ {print $10; exit}')"
+  export FPR_A
+}
+
+teardown_file() {
+  gpgconf --homedir "${GPGDIR_A}" --kill all >/dev/null 2>&1 || true
+  gpgconf --homedir "${GPGDIR_B}" --kill all >/dev/null 2>&1 || true
+}
+
+# build_archive: write MOCKDIR/Packages.xz and a clearsigned MOCKDIR/InRelease.
+# Knobs (env): AR_PKG (default passwd), AR_STANZA_SHA (default the .deb sha),
+# AR_FILENAME, AR_UNTIL (Valid-Until value, default far future, "none" omits),
+# AR_SIGNERS ("A", "B" or "A B"), AR_BYHASH (yes|no).
+build_archive() {
+  local pkg="${AR_PKG:-passwd}" sha="${AR_STANZA_SHA:-${DEB_SHA}}"
+  local fn="${AR_FILENAME:-pool/main/s/shadow/passwd_4.17.4-2_amd64.deb}"
+  local until="${AR_UNTIL:-Mon, 01 Jan 2057 00:00:00 UTC}" signers="${AR_SIGNERS:-A}"
+  {
+    printf 'Package: other\nVersion: 1.0\nArchitecture: amd64\nFilename: pool/main/o/other/other_1.0_amd64.deb\nSHA256: %s\nDescription: x\n multi line\n\n' "$(sha_of other)"
+    printf 'Package: %s\nVersion: 1:4.17.4-2\nArchitecture: amd64\nFilename: %s\nSHA256: %s\nDescription: y\n\n' "${pkg}" "${fn}" "${sha}"
+  } | xz -c >"${MOCKDIR}/Packages.xz"
+  local ihash isize
+  ihash="$(sha256sum "${MOCKDIR}/Packages.xz" | cut -d' ' -f1)"
+  isize="$(wc -c <"${MOCKDIR}/Packages.xz" | tr -d ' ')"
+  {
+    printf 'Origin: Debian\nSuite: stable\nCodename: trixie\nDate: Sat, 01 Jan 2050 00:00:00 UTC\n'
+    [[ "${until}" == none ]] || printf 'Valid-Until: %s\n' "${until}"
+    printf 'Acquire-By-Hash: %s\nSHA256:\n %s %s main/binary-amd64/Packages.xz\n %s 10 main/binary-amd64/Packages.gz\n' \
+      "${AR_BYHASH:-yes}" "${ihash}" "${isize}" "$(sha_of gz)"
+  } >"${MOCKDIR}/release.txt"
+  local args=() k
+  for k in ${signers}; do
+    local dir="GPGDIR_${k}"
+    args+=(--homedir "${!dir}" --local-user "$(gpg --homedir "${!dir}" --with-colons --list-keys | awk -F: '/^fpr/ {print $10; exit}')")
+  done
+  # Two signers need both secret keys in one homedir: import B's into A's.
+  if [[ "${signers}" == "A B" ]]; then
+    gpg --homedir "${GPGDIR_A}" --batch --pinentry-mode loopback --passphrase '' --yes \
+      --import "${BATS_FILE_TMPDIR}/secB.asc" >/dev/null 2>&1
+    gpg --homedir "${GPGDIR_A}" --batch --pinentry-mode loopback --passphrase '' --yes --clearsign \
+      --local-user "${FPR_A}" --local-user "${FPR_B}" -o "${MOCKDIR}/InRelease" "${MOCKDIR}/release.txt" >/dev/null 2>&1
+  else
+    gpg "${args[@]}" --batch --pinentry-mode loopback --passphrase '' --yes --clearsign \
+      -o "${MOCKDIR}/InRelease" "${MOCKDIR}/release.txt" >/dev/null 2>&1
+  fi
+  echo 200 >"${MOCKDIR}/ir_code"
+  echo 200 >"${MOCKDIR}/idx_code"
+}
+
+arch_run() { # extra args pass through
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --keyring "${BATS_FILE_TMPDIR}/keyA.gpg" "$@"
+}
+arch_state() { jq -r .archive_signature <<<"${output}"; }
+arch_reason() { jq -r .archive_signature_detail.reason <<<"${output}"; }
+
+@test "archive: good signature, index and stanza agree -> verified, fingerprint recorded" {
+  build_archive
+  arch_run
+  [[ "${status}" -eq 4 ]]
+  [[ "$(arch_state)" == "verified" ]]
+  [[ "$(jq -r .archive_signature_detail.suite <<<"${output}")" == "trixie" ]]
+  [[ "$(jq -r .archive_signature_detail.component <<<"${output}")" == "main" ]]
+  [[ "$(jq -r .archive_signature_detail.index <<<"${output}")" == "main/binary-amd64/Packages.xz" ]]
+  [[ "$(jq -r '.archive_signature_detail.signer_fingerprints[0]' <<<"${output}")" == "${FPR_A^^}" ]]
+  grep -q '/dists/trixie/InRelease$' "${MOCKDIR}/curl.log"
+  grep -q '/by-hash/SHA256/' "${MOCKDIR}/curl.log"
+}
+
+@test "archive: without Acquire-By-Hash the plain index path is used" {
+  AR_BYHASH=no build_archive
+  arch_run
+  [[ "$(arch_state)" == "verified" ]]
+  grep -q '/main/binary-amd64/Packages.xz$' "${MOCKDIR}/curl.log"
+  ! grep -q '/by-hash/' "${MOCKDIR}/curl.log"
+}
+
+@test "archive: signature by a key not in the keyring -> failed, exit 3" {
+  AR_SIGNERS=B build_archive
+  arch_run
+  [[ "${status}" -eq 3 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
+  [[ "$(arch_state)" == "failed" ]]
+  [[ "$(arch_reason)" == *"no valid signature"* ]]
+}
+
+@test "archive: tampered InRelease body -> failed, exit 3" {
+  build_archive
+  sed -i 's/^Suite: stable/Suite: tampered/' "${MOCKDIR}/InRelease"
+  arch_run
+  [[ "${status}" -eq 3 ]]
+  [[ "$(arch_state)" == "failed" ]]
+  [[ "$(arch_reason)" == *"BADSIG"* ]]
+}
+
+@test "archive: one good signature plus one unknown-key signature -> verified" {
+  gpg --homedir "${GPGDIR_B}" --batch --pinentry-mode loopback --passphrase '' --export-secret-keys --armor >"${BATS_FILE_TMPDIR}/secB.asc"
+  FPR_B="$(gpg --homedir "${GPGDIR_B}" --with-colons --list-keys | awk -F: '/^fpr/ {print $10; exit}')"
+  export FPR_B
+  AR_SIGNERS="A B" build_archive
+  arch_run
+  [[ "$(arch_state)" == "verified" ]]
+  [[ "$(jq -r '.archive_signature_detail.signer_fingerprints | length' <<<"${output}")" -eq 1 ]]
+}
+
+@test "archive: downloaded index differs from the signed hash -> failed" {
+  build_archive
+  { printf 'Package: extra\n\n'; xz -dc "${MOCKDIR}/Packages.xz"; } | xz -c >"${MOCKDIR}/Packages.xz.new"
+  mv "${MOCKDIR}/Packages.xz.new" "${MOCKDIR}/Packages.xz"
+  arch_run
+  [[ "${status}" -eq 3 ]]
+  [[ "$(arch_state)" == "failed" ]]
+  [[ "$(arch_reason)" == *"does not match the size and SHA256"* ]]
+}
+
+@test "archive: signed stanza SHA256 disagrees with the target apt SHA256 -> failed, exit 3" {
+  AR_STANZA_SHA="$(sha_of forged)" build_archive
+  arch_run
+  [[ "${status}" -eq 3 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
+  [[ "$(arch_state)" == "failed" ]]
+  [[ "$(arch_reason)" == *"possible tampering"* ]]
+}
+
+@test "archive: signed Filename disagrees with the target Filename -> failed" {
+  AR_FILENAME=pool/main/x/evil/passwd_4.17.4-2_amd64.deb build_archive
+  arch_run
+  [[ "${status}" -eq 3 ]]
+  [[ "$(arch_state)" == "failed" ]]
+}
+
+@test "archive: package absent from the signed index -> not-verified, verdict unchanged" {
+  AR_PKG=notpasswd build_archive
+  arch_run
+  [[ "${status}" -eq 4 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "match-unverified" ]]
+  [[ "$(arch_state)" == "not-verified" ]]
+  [[ "$(arch_reason)" == *"not in the current signed index"* ]]
+}
+
+@test "archive: InRelease 404 and 000 -> not-verified, verdict unchanged" {
+  build_archive
+  local c
+  for c in 404 000; do
+    echo "${c}" >"${MOCKDIR}/ir_code"
+    arch_run
+    [[ "${status}" -eq 4 ]]
+    [[ "$(arch_state)" == "not-verified" ]]
+    [[ "$(arch_reason)" == *"InRelease"* ]]
+  done
+}
+
+@test "archive: index fetch failure -> not-verified" {
+  build_archive
+  echo 404 >"${MOCKDIR}/idx_code"
+  arch_run
+  [[ "${status}" -eq 4 ]]
+  [[ "$(arch_state)" == "not-verified" ]]
+}
+
+@test "archive: --no-archive-check -> not-verified and no extra downloads" {
+  build_archive
+  arch_run --no-archive-check
+  [[ "${status}" -eq 4 ]]
+  [[ "$(arch_state)" == "not-verified" ]]
+  [[ "$(arch_reason)" == *"--no-archive-check"* ]]
+  [[ "$(wc -l <"${MOCKDIR}/curl.log")" -eq 1 ]]
+}
+
+@test "archive: gpgv missing from PATH -> not-verified, never an error" {
+  build_archive
+  local clean="${BATS_TEST_TMPDIR}/nogpgv" d
+  mkdir -p "${clean}"
+  for d in /usr/local/bin /usr/bin; do
+    find "${d}" -maxdepth 1 \( -type f -o -type l \) ! -name gpgv -exec ln -sf -t "${clean}" {} + 2>/dev/null
+  done
+  PATH="${MOCKBIN}:${clean}" arch_run
+  [[ "${status}" -eq 4 ]]
+  [[ "$(arch_state)" == "not-verified" ]]
+  [[ "$(arch_reason)" == *"gpgv is not installed"* ]]
+}
+
+@test "archive: expired Valid-Until -> failed" {
+  AR_UNTIL="Mon, 01 Jan 2024 00:00:00 UTC" build_archive
+  arch_run
+  [[ "${status}" -eq 3 ]]
+  [[ "$(arch_state)" == "failed" ]]
+  [[ "$(arch_reason)" == *"expired"* ]]
+}
+
+@test "archive: missing Valid-Until is accepted" {
+  AR_UNTIL=none build_archive
+  arch_run
+  [[ "$(arch_state)" == "verified" ]]
+}
+
+@test "archive: unknown mirror host without --keyring -> not-verified with reason" {
+  build_archive
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --mirror https://mirror.example.invalid/debian
+  [[ "${status}" -eq 4 ]]
+  [[ "$(arch_state)" == "not-verified" ]]
+  [[ "$(arch_reason)" == *"unknown archive host"* ]]
+}
+
+@test "archive: mismatch keeps precedence over a failed archive check" {
+  write_ownership "$(sha_of tampered)"
+  AR_STANZA_SHA="$(sha_of forged)" build_archive
+  arch_run
+  [[ "${status}" -eq 1 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "mismatch" ]]
+  [[ "$(arch_state)" == "failed" ]]
+}
+
+@test "archive: failed check beats an otherwise clean outside-verified match" {
+  AR_STANZA_SHA="$(sha_of forged)" build_archive
+  arch_run --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 3 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
+}
+
+@test "archive: markdown shows the state and escapes the reason" {
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --keyring /nonexistent_ring.gpg --format md
+  [[ "${status}" -eq 4 ]]
+  assert_output --partial "Archive signature: not-verified"
+  assert_output --partial 'nonexistent\_ring.gpg'
+  build_archive
+  arch_run --format md
+  assert_output --partial "Archive signature: verified"
+  assert_output --partial "${FPR_A^^}"
+}
+
+@test "archive: --keyring needs an absolute safe path" {
+  run "${TOOL}" --host t --path /usr/bin/chsh --keyring 'rel/ring.gpg'
+  [[ "${status}" -eq 3 ]]
+  run "${TOOL}" --host t --path /usr/bin/chsh --keyring
+  [[ "${status}" -eq 3 ]]
+}
+
+@test "archive: --version reports 1.4.0 and --help documents the new options" {
+  run "${TOOL}" --version
+  assert_output "package-verify 1.4.0"
+  run "${TOOL}" --help
+  assert_output --partial "--keyring"
+  assert_output --partial "--no-archive-check"
 }

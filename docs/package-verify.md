@@ -29,6 +29,8 @@ tools/package-verify.sh --host <ct-ssh-target> --path /usr/bin/passwd \
 | `--inside-via-pct` | run the inside commands with `pct exec` on `--pve-host` |
 | `--format json\|md` | JSON (default) or a compact Markdown block |
 | `--mirror <url>` | https archive base URL; default is derived from the target's apt origin |
+| `--keyring <path>` | GPG keyring for the archive signature check; default `/usr/share/keyrings/debian-archive-keyring.gpg` or `ubuntu-archive-keyring.gpg`, chosen from the archive host (an unknown host needs `--keyring`) |
+| `--no-archive-check` | skip the archive signature check |
 
 Exit codes: `0` match (outside-verified), `1` mismatch, `2` package-unknown,
 `3` error or usage, `4` match-unverified (self-reported only).
@@ -115,7 +117,29 @@ the canonical path (`package-unknown`).
    the inside hash already differs from the package file: a mismatch always
    wins, and the outside failure is recorded in the reason and in
    `sha256_outside_reason`.
-5. Verdict, see below.
+5. Archive signature check (after the .deb SHA-256 equals the target's apt
+   `SHA256:`, skipped with `--no-archive-check`). The suite, component and index
+   architecture come from the `apt-cache policy` origin line (for example
+   `trixie/main amd64`) and are validated before they are used in a URL. The
+   runner fetches `dists/<suite>/InRelease` over https (1 MiB cap) and verifies
+   it with `gpgv --status-fd`, parsing only the machine status lines. The rule
+   is the one apt uses: at least one `VALIDSIG` from the keyring and no
+   `BADSIG`, `EXPKEYSIG`, `REVKEYSIG` or `EXPSIG`; a signature by a key that is
+   not in the keyring (`ERRSIG`, `NO_PUBKEY`) is tolerated. This matters
+   because Debian signs with several keys and an older keyring package can
+   know only some of them. The fingerprints of the valid signers are recorded.
+   Only the plaintext that gpgv writes is read afterwards, never the raw
+   InRelease. A past `Valid-Until` fails the check. The SHA-256 and size of
+   `<component>/binary-<arch>/Packages.xz` (or `.gz`) are taken from the signed
+   text; the index is fetched (from `by-hash/SHA256/<hash>` when the release
+   declares `Acquire-By-Hash: yes`, 128 MiB cap) and must match both. It is
+   decompressed under the same time and memory bounds as the package decoders
+   and stream-parsed for the stanza with the target's package, version and
+   architecture; its `SHA256` and `Filename` must equal the target's apt
+   `SHA256` and `Filename`. This check uses `gpgv` and `xz` (or `gzip`) plus a
+   keyring on the runner. They are optional: when one is missing the result is
+   `not-verified` with a reason and the run never errors for that.
+6. Verdict, see below.
 
 ## Verdicts and trust
 
@@ -125,13 +149,21 @@ the canonical path (`package-unknown`).
 | `match-unverified` | 4 | inside hash equals package file hash, no independent outside view | `self-reported` |
 | `mismatch` | 1 | any compared hash differs | as available |
 | `package-unknown` | 2 | not owned, diverted, version or file not in the archive, unsupported origin | as available |
-| `error` | 3 | usage error, missing runner command (`jq curl dpkg-deb tar ssh sha256sum timeout`), ssh failure, download network failure (curl 000 or HTTP 5xx; a 404 stays `package-unknown`), integrity check failure, incomplete or inconsistent read, decoder timeout | as available |
+| `error` | 3 | usage error, missing runner command (`jq curl dpkg-deb tar ssh sha256sum timeout`), ssh failure, download network failure (curl 000 or HTTP 5xx; a 404 stays `package-unknown`), integrity check failure, incomplete or inconsistent read, decoder timeout, failed archive signature check | as available |
 
 `match` needs an independent outside (hypervisor) hash. Without one, every
 fact (the resolved path, the owning package, its version, the .deb checksum and
 the live hash) comes from the target, so a compromised target can forge a
 clean-looking result. `match-unverified` and `trust: "self-reported"` mean the
 result rests entirely on the target's honesty.
+
+Archive signature precedence: a failed archive check (`archive_signature:
+"failed"`) turns an otherwise `match` or `match-unverified` result into `error`
+(exit 3) with a loud reason. It is evaluated after every hash mismatch check, so
+an established `mismatch` (inside or outside) is still reported as `mismatch`
+and the failed check is shown in `archive_signature`. An earlier-ordered
+consistency error (for example a size mismatch) also keeps its own reason; the
+JSON still carries the archive result.
 
 ## Output
 
@@ -140,19 +172,34 @@ package, version, architecture, origin, `deb_url`, `deb_sha256` and whether it
 matched the apt metadata, the inside, extracted and outside SHA-256 values (the
 outside value is `null` plus a reason when there is no outside view), the
 verdict, `trust`, `dpkg_path` (the path dpkg registered, which differs from
-`resolved_path` only for a usrmerge alias), and
-`archive_signature: "not-verified"`. In Markdown output,
+`resolved_path` only for a usrmerge alias), and the archive result:
+`archive_signature` (`verified`, `not-verified` or `failed`) with
+`archive_signature_detail` (`suite`, `component`, `index`,
+`signer_fingerprints`, `reason`). In Markdown output,
 target-controlled text is reduced to printable ASCII, truncated to 200
 characters and Markdown-escaped before it is rendered.
 
 ## Trust limits
 
-- The InRelease/Packages GPG signature is not checked by this tool
-  (`archive_signature: "not-verified"`). The .deb is bound to the SHA256 the
-  target reports from its apt lists, which a compromised target can forge.
-  Independent verification needs a Debian keyring on the runner (for example
-  `debian-archive-keyring`); the tool never installs one and that remains
-  pending the owner's approval.
+- `archive_signature: "verified"` means the runner itself checked the archive
+  signature and found the .deb in the signed index, so a compromised target
+  cannot forge the binding between the .deb and its checksum. It says nothing
+  about the live file; only the outside view does.
+- `not-verified` (no verdict change) covers: `--no-archive-check`, no `gpgv`,
+  `xz`/`gzip` or keyring on the runner, an unknown archive host without
+  `--keyring`, a .deb fetched from `snapshot.debian.org`, a package version
+  that is no longer in the current signed index (superseded by an update), and
+  a network failure or non-200 on InRelease or the index. In those cases the
+  .deb is bound only to the SHA256 the target reports from its apt lists, which
+  a compromised target can forge.
+- `failed` (verdict `error`) covers a bad, expired-key or revoked-key
+  signature, no valid signature at all, an expired `Valid-Until`, an index whose
+  size or hash differs from the signed text, and a signed stanza that
+  disagrees with the target's apt `SHA256` or `Filename`.
+- The default Debian keyring package on the runner can lag the archive: the
+  Ubuntu `debian-archive-keyring` 2023.4 knows the bookworm keys but not the
+  trixie ones, and trixie InRelease is still accepted because one of its
+  signatures is by a known key. Keep the keyring package current.
 - A host that is fully compromised can lie to every command run on it. For
   containers on a block-device rootfs, the outside view reads the file from the
   hypervisor without using the container's own tools, and is the only

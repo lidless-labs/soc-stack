@@ -9,13 +9,14 @@
 # Usage:
 #   tools/package-verify.sh --host <ssh-target> --path </abs/file>
 #       [--pve-host <ssh-target> --ctid <id>] [--inside-via-pct]
-#       [--format json|md] [--mirror <url>]
+#       [--format json|md] [--mirror <url>] [--keyring <path>]
+#       [--no-archive-check]
 #
 # Exit codes: 0 match (outside-verified), 1 mismatch, 2 package-unknown,
 # 3 error/usage, 4 match-unverified (self-reported only).
 set -euo pipefail
 
-TOOL_VERSION="1.3.0"
+TOOL_VERSION="1.4.0"
 
 usage() {
   cat <<EOF
@@ -50,6 +51,13 @@ Optional:
   --mirror <url>        https archive base URL (default: derived from the
                         target's apt origin for debian/ubuntu archives; other
                         origins yield package-unknown).
+  --keyring <path>      GPG keyring used to verify the archive InRelease
+                        (default: debian-archive-keyring.gpg for Debian
+                        origins, ubuntu-archive-keyring.gpg for Ubuntu
+                        origins, both under /usr/share/keyrings, chosen from
+                        the archive host; an unknown host needs --keyring).
+  --no-archive-check    skip the archive signature check (archive_signature
+                        is then not-verified).
   --help                show this help
   --version             show the tool version
 
@@ -58,7 +66,9 @@ dpkg-divert, dpkg-query, apt-cache show/policy. On the Proxmox host: pct config,
 pvesm path, debugfs (read-only, no -w). It never mounts or writes.
 
 Runner requirements: jq curl dpkg-deb tar ssh sha256sum timeout (a missing one
-is an error, exit 3). Every package decoder and parser stage (dpkg-deb, tar,
+is an error, exit 3). Optional: gpgv, xz (or gzip) and an archive keyring; when
+one is missing the archive signature check is skipped as not-verified, never an
+error. Every package decoder and parser stage (dpkg-deb, tar,
 the listing filter) runs under a timeout (PV_DECODER_TIMEOUT seconds, 1..3600,
 default 120) and a virtual memory cap (PV_DECODER_VMEM_KB, 262144..8388608,
 default 1048576 = 1 GiB). Out-of-range values are rejected with exit 3, and a
@@ -77,26 +87,38 @@ Verdicts and exit codes:
   error            3  usage error, ssh failure, non-canonical path, download or
                       metadata failure (.deb sha256 != target apt SHA256, or
                       .deb control fields != claimed package), outside file
-                      is not a regular file or its read is incomplete, or the
-                      package member is a link. A mismatch already established
+                      is not a regular file or its read is incomplete, the
+                      package member is a link, or the archive signature check
+                      failed (bad signature, expired or tampered signed index,
+                      or the signed index disagrees with the target). A mismatch already established
                       by the inside hash is reported as mismatch even when the
                       outside view then fails.
 
-Note: archive_signature is always "not-verified". Trust in the .deb rests on
-the target's apt-verified metadata (SHA256 from its GPG-checked lists), which a
-compromised target can forge; only the outside view is independent. Independent
-InRelease checking needs a Debian keyring on the runner; this tool never
-installs one. A block-device read of a running container can lag the page
-cache.
+Note: archive_signature is "verified" only when the runner itself checked the
+archive's GPG-signed InRelease (gpgv, at least one valid signature and no
+bad, expired or revoked one, the same rule apt uses), the index hash and size
+from it, and found the .deb SHA256 and Filename in the signed index; a
+compromised target cannot forge that binding. "not-verified" means the check
+could not run or could not vouch for this version (no verdict change, for
+example the version was superseded in the current index). "failed" (verdict
+error, exit 3) means the signed data contradicts the target or the signature is
+bad; an already established mismatch still reports as mismatch. The outside
+view stays the only independent evidence about the live file. A block-device
+read of a running container can lag the page cache.
 EOF
 }
 
-HOST="" FPATH="" PVE_HOST="" CTID="" FORMAT="json" MIRROR="" INSIDE_VIA_PCT=0
+HOST="" FPATH="" PVE_HOST="" CTID="" FORMAT="json" MIRROR="" INSIDE_VIA_PCT=0 KEYRING="" ARCHIVE_ENABLED=1
 
 # ---- state used for output ----
 RESOLVED="" DPKG_PATH="" INSIDE_SIZE="" MEMBER_SIZE="" PKG="" VERSION="" ARCH="" ORIGIN="" DEB_URL="" DEB_SHA="" DEB_META_MATCH="null"
 APT_SHA="" SHA_INSIDE="" SHA_EXTRACTED="" SHA_OUTSIDE="" OUTSIDE_REASON="" VERDICT="" REASON=""
 WORK=""
+# archive check state (see archive_check)
+ARCHIVE_STATE="not-verified"
+ARCHIVE_REASON="archive check not reached (an earlier stage ended the run)"
+ARCHIVE_BAD_STATUS="" ORIGIN_IDXARCH="" ARCHIVE_SUITE="" ARCHIVE_COMPONENT="" ARCHIVE_INDEX="" ARCHIVE_FPRS=""
+USED_SNAPSHOT=0
 EMPTY_SHA="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 PV_DECODER_TIMEOUT="${PV_DECODER_TIMEOUT:-120}"
 PV_DECODER_VMEM_KB="${PV_DECODER_VMEM_KB:-1048576}"
@@ -136,6 +158,8 @@ while [[ $# -gt 0 ]]; do
     --inside-via-pct) INSIDE_VIA_PCT=1; shift ;;
     --format) [[ $# -ge 2 ]] || fail_usage "--format needs a value"; FORMAT="$2"; shift 2 ;;
     --mirror) [[ $# -ge 2 ]] || fail_usage "--mirror needs a value"; MIRROR="$2"; shift 2 ;;
+    --keyring) [[ $# -ge 2 ]] || fail_usage "--keyring needs a value"; KEYRING="$2"; shift 2 ;;
+    --no-archive-check) ARCHIVE_ENABLED=0; shift ;;
     --help | -h) usage; exit 0 ;;
     --version) echo "package-verify ${TOOL_VERSION}"; exit 0 ;;
     *) fail_usage "unknown argument: $1" ;;
@@ -156,6 +180,7 @@ if [[ "$INSIDE_VIA_PCT" -eq 1 ]]; then
 else
   [[ -n "$HOST" ]] || fail_usage "--host is required"
 fi
+if [[ -n "$KEYRING" ]]; then valid_path "$KEYRING" || fail_usage "--keyring must be an absolute path (characters A-Z a-z 0-9 . _ + / -)"; fi
 if [[ -n "$MIRROR" ]]; then valid_mirror "$MIRROR" || fail_usage "--mirror must be an https URL"; MIRROR="${MIRROR%/}"; fi
 [[ "$PV_DECODER_TIMEOUT" =~ ^[0-9]{1,7}$ && "$PV_DECODER_VMEM_KB" =~ ^[0-9]{1,9}$ ]] || fail_usage "PV_DECODER_TIMEOUT and PV_DECODER_VMEM_KB must be decimal digits"
 PV_DECODER_TIMEOUT=$((10#$PV_DECODER_TIMEOUT))
@@ -201,6 +226,13 @@ emit_json() {
     --arg verdict "$VERDICT" \
     --arg trust "$(trust_level)" \
     --arg reason "$REASON" \
+    --arg arch_state "$ARCHIVE_STATE" \
+    --arg arch_reason "$ARCHIVE_REASON" \
+    --arg arch_suite "$ARCHIVE_SUITE" \
+    --arg arch_comp "$ARCHIVE_COMPONENT" \
+    --arg arch_index "$ARCHIVE_INDEX" \
+    --arg arch_fprs "$ARCHIVE_FPRS" \
+    --arg arch_note "$(archive_note)" \
     '
     def nn: if . == "" then null else . end;
     {
@@ -226,10 +258,25 @@ emit_json() {
       trust: $trust,
       reason: ($reason | nn),
       trust_note: "outside-verified means an independent hypervisor read of the caller-supplied path agrees with the package file. self-reported means every fact came from the target itself and rests entirely on the target honesty.",
-      archive_signature: "not-verified",
-      archive_signature_note: "The .deb is bound to the SHA256 the target reports from its apt lists, which a compromised target can forge. Independent InRelease/Packages GPG verification is not done: the runner has no Debian keyring and installing debian-archive-keyring needs the owner approval.",
+      archive_signature: $arch_state,
+      archive_signature_detail: {
+        suite: ($arch_suite | nn),
+        component: ($arch_comp | nn),
+        index: ($arch_index | nn),
+        signer_fingerprints: ($arch_fprs | split(" ") | map(select(. != ""))),
+        reason: ($arch_reason | nn)
+      },
+      archive_signature_note: $arch_note,
       outside_note: "A block-device read of a running container can lag the page cache."
     }'
+}
+
+archive_note() {
+  case "$ARCHIVE_STATE" in
+    verified) echo "The runner verified the archive GPG signature on InRelease, the index hash and size, and found this .deb SHA256 and Filename in the signed index, so the binding to the .deb does not depend on the target's apt metadata." ;;
+    failed) echo "The archive signature check failed: the signed archive data is bad, expired, or contradicts the target's apt metadata. Do not trust the .deb binding." ;;
+    *) echo "The .deb is bound only to the SHA256 the target reports from its apt lists, which a compromised target can forge, because the independent archive signature check did not complete (see archive_signature_detail.reason)." ;;
+  esac
 }
 
 # Markdown rendering of target-controlled text. Keep printable ASCII only
@@ -270,7 +317,7 @@ emit_md() {
 | sha256 outside | ${outside} |
 | Checked (UTC) | $(date -u +%Y-%m-%dT%H:%M:%SZ) |
 
-Trust: outside-verified means an independent hypervisor read of the caller-supplied path agrees with the package file; self-reported rests entirely on the target's honesty. Archive signature: not-verified (the .deb is bound to the SHA256 the target reports from its apt lists, which a compromised target can forge; InRelease GPG checking is not done because the runner has no Debian keyring). A block-device read of a running container can lag the page cache.
+Trust: outside-verified means an independent hypervisor read of the caller-supplied path agrees with the package file; self-reported rests entirely on the target's honesty. Archive signature: $(md_esc "$ARCHIVE_STATE") ($(md_esc "$ARCHIVE_REASON" 300)$([[ -n "$ARCHIVE_FPRS" ]] && printf '; signer %s' "$(md_esc "$ARCHIVE_FPRS" 200)")). $(md_esc "$(archive_note)" 400) A block-device read of a running container can lag the page cache.
 EOF
 }
 
@@ -523,10 +570,9 @@ origin_line="$(awk -v v="$VERSION" '
   { line=$0; sub(/^ \*\*\* /, "     ", line); n=split(line, f, " ") }
   n == 2 && f[1] == v && f[2] ~ /^[0-9]+$/ { in_v=1; next }
   in_v && n == 2 && f[2] ~ /^[0-9]+$/ { in_v=0 }
-  in_v && n >= 2 && f[2] ~ /^https?:\/\// { print f[2], f[3]; exit }
+  in_v && n >= 2 && f[2] ~ /^https?:\/\// { print f[2], f[3], f[4]; exit }
 ' <<<"$policy")"
-ORIGIN_URL="${origin_line%% *}"
-ORIGIN_SUITE="${origin_line#* }"
+read -r ORIGIN_URL ORIGIN_SUITE ORIGIN_IDXARCH <<<"$origin_line"
 ORIGIN_URL="${ORIGIN_URL%/}"
 if [[ -z "$MIRROR" ]]; then
   if [[ -z "$ORIGIN_URL" ]]; then
@@ -547,11 +593,183 @@ DEB_URL="${MIRROR}/${FILENAME}"
 WORK="$(mktemp -d)" || finish error "mktemp failed"
 DEB="${WORK}/package.deb"
 
-fetch() { # fetch <url> <out> -> prints http code
-  curl -sSL --proto '=https' --proto-redir '=https' --max-redirs 5 --max-time 300 --max-filesize 209715200 \
+fetch() { # fetch <url> <out> [max-bytes] -> prints http code
+  curl -sSL --proto '=https' --proto-redir '=https' --max-redirs 5 --max-time 300 --max-filesize "${3:-209715200}" \
     -o "$2" -w '%{http_code}' -- "$1" 2>/dev/null || true
 }
 net_failure() { [[ -z "$1" || "$1" == 000 || "$1" == 5?? ]]; } # no response, or a server error
+
+# ---- archive signature check (independent of the target) ----
+# Binds the downloaded .deb to the archive's GPG-signed index, so a target that
+# forges its apt metadata cannot forge this. States: verified, not-verified
+# (no verdict change), failed (verdict becomes error unless a mismatch is
+# already established; see the verdict step). Only the plaintext written by
+# gpgv --output is ever read after the signature check, never the raw InRelease.
+
+arch_done() { ARCHIVE_STATE="$1"; ARCHIVE_REASON="$2"; }
+
+archive_check() {
+  local suite comp idx_arch host kr base ir_code
+  local gpgv_dir status_file plain ir_file st line bad=0 valid=0 fprs=""
+  local until_raw until_ts by_hash want hash size idx_path idx_file idx_code idx_url
+  local got_size got_hash stanza_out sf ss decomp ext r1 r2 r3
+
+  if [[ "$ARCHIVE_ENABLED" -eq 0 ]]; then
+    arch_done not-verified "archive check disabled with --no-archive-check"; return 0
+  fi
+  if [[ "$USED_SNAPSHOT" -eq 1 ]]; then
+    arch_done not-verified "the .deb came from snapshot.debian.org (version rotated out of the current archive index), so the current signed index cannot vouch for it"; return 0
+  fi
+  command -v gpgv >/dev/null 2>&1 || { arch_done not-verified "gpgv is not installed on the runner"; return 0; }
+
+  base="${ORIGIN_SUITE%%/*}"; comp=""
+  [[ "$ORIGIN_SUITE" == */* ]] && comp="${ORIGIN_SUITE#*/}"
+  suite="$base"; idx_arch="$ORIGIN_IDXARCH"
+  if [[ -z "$suite" || -z "$comp" || -z "$idx_arch" ]]; then
+    arch_done not-verified "the target's apt policy did not report suite, component and architecture for ${PKG}"; return 0
+  fi
+  if [[ ! "$suite" =~ ^[a-z0-9][a-z0-9.-]*$ || ! "$comp" =~ ^[a-z0-9][a-z0-9-]*$ || ! "$idx_arch" =~ ^[a-z0-9-]+$ ]]; then
+    arch_done not-verified "suite, component or architecture from the target has unexpected characters; not used in a URL"; return 0
+  fi
+  ARCHIVE_SUITE="$suite"; ARCHIVE_COMPONENT="$comp"
+
+  kr="$KEYRING"
+  if [[ -z "$kr" ]]; then
+    host="${MIRROR#https://}"; host="${host%%[/:]*}"
+    if [[ "$host" =~ ^(deb|ftp|security|ftp\.[a-z]{2})\.debian\.org$ ]]; then
+      kr="/usr/share/keyrings/debian-archive-keyring.gpg"
+    elif [[ "$host" =~ ^(([a-z]{2}\.)?archive|security)\.ubuntu\.com$ ]]; then
+      kr="/usr/share/keyrings/ubuntu-archive-keyring.gpg"
+    else
+      arch_done not-verified "unknown archive host for ${MIRROR}; pass --keyring to choose the trusted keyring"; return 0
+    fi
+  fi
+  [[ -r "$kr" && -s "$kr" ]] || { arch_done not-verified "keyring ${kr} is missing or unreadable on the runner"; return 0; }
+
+  # InRelease: small, https only, then verified by gpgv before any use.
+  ir_file="${WORK}/InRelease"
+  ir_code="$(fetch "${MIRROR}/dists/${suite}/InRelease" "$ir_file" 1048576)"
+  if [[ "$ir_code" != "200" || ! -s "$ir_file" ]]; then
+    arch_done not-verified "could not fetch InRelease for ${suite} (http ${ir_code:-none})"; return 0
+  fi
+  gpgv_dir="${WORK}/gnupg"; mkdir -m 700 "$gpgv_dir" 2>/dev/null || { arch_done not-verified "could not create a private gpgv home"; return 0; }
+  status_file="${WORK}/gpgv.status"; plain="${WORK}/InRelease.plain"
+  : >"$status_file"
+  # Exit codes and human text are not parsed; only the machine status lines.
+  ( decoder gpgv --homedir "$gpgv_dir" --keyring "$kr" --status-fd 3 --output "$plain" "$ir_file" ) 3>"$status_file" >/dev/null 2>&1 || true
+  while IFS= read -r line; do
+    case "$line" in
+      "[GNUPG:] BADSIG "* | "[GNUPG:] EXPKEYSIG "* | "[GNUPG:] REVKEYSIG "* | "[GNUPG:] EXPSIG "*)
+        bad=1; st="${line#\[GNUPG:\] }"; st="${st%% *}"
+        ARCHIVE_BAD_STATUS="${ARCHIVE_BAD_STATUS:-$st}" ;;
+      "[GNUPG:] VALIDSIG "*)
+        # fields: [GNUPG:] VALIDSIG <fpr> ... <sig-class> <primary-fpr>
+        local -a f; read -r -a f <<<"$line"
+        local fpr="${f[11]:-${f[2]:-}}"
+        if [[ "$fpr" =~ ^[0-9A-Fa-f]{40}$ || "$fpr" =~ ^[0-9A-Fa-f]{64}$ ]]; then
+          valid=$((valid + 1)); fprs+="${fprs:+ }${fpr^^}"
+        fi ;;
+    esac
+  done <"$status_file"
+  if [[ "$bad" -eq 1 ]]; then
+    arch_done failed "InRelease signature check reported ${ARCHIVE_BAD_STATUS} for ${suite}; the signed index is not trustworthy"; return 0
+  fi
+  if [[ "$valid" -eq 0 || ! -s "$plain" ]]; then
+    arch_done failed "InRelease for ${suite} has no valid signature from the trusted keyring (no VALIDSIG)"; return 0
+  fi
+  ARCHIVE_FPRS="$fprs"
+
+  until_raw="$(sed -n 's/^Valid-Until: *//p' "$plain" | head -n 1)"
+  if [[ -n "$until_raw" ]]; then
+    until_ts="$(LC_ALL=C date -u -d "$until_raw" +%s 2>/dev/null)" || until_ts=""
+    if [[ ! "$until_ts" =~ ^[0-9]+$ ]]; then
+      arch_done failed "InRelease Valid-Until is not a parseable date"; return 0
+    fi
+    if (( until_ts < $(date -u +%s) )); then
+      arch_done failed "InRelease for ${suite} expired (Valid-Until ${until_raw:0:40}); a stale signed index can hide a replaced package"; return 0
+    fi
+  fi
+  by_hash=0
+  grep -qx 'Acquire-By-Hash: yes' "$plain" && by_hash=1
+
+  # Pick Packages.xz (needs xz) or Packages.gz (needs gzip) from the SHA256 block.
+  decomp=""
+  for ext in xz gz; do
+    if [[ "$ext" == xz ]]; then command -v xz >/dev/null 2>&1 || continue; else command -v gzip >/dev/null 2>&1 || continue; fi
+    want="${comp}/binary-${idx_arch}/Packages.${ext}"
+    line="$(awk -v w="$want" '/^SHA256:/ {f=1; next} /^[^ ]/ {f=0} f && $3 == w {print $1, $2; exit}' "$plain")"
+    if [[ -n "$line" ]]; then decomp="$ext"; break; fi
+  done
+  if [[ -z "$decomp" ]]; then
+    arch_done not-verified "no usable Packages.xz or Packages.gz entry (or xz/gzip missing on the runner) for ${comp}/binary-${idx_arch}"; return 0
+  fi
+  hash="${line% *}"; size="${line#* }"
+  idx_path="dists/${suite}/${comp}/binary-${idx_arch}/Packages.${decomp}"
+  ARCHIVE_INDEX="${comp}/binary-${idx_arch}/Packages.${decomp}"
+  if ! valid_sha "$hash" || [[ ! "$size" =~ ^[0-9]{1,12}$ ]]; then
+    arch_done failed "signed InRelease lists a malformed hash or size for ${ARCHIVE_INDEX}"; return 0
+  fi
+  if (( size > 134217728 )); then
+    arch_done not-verified "signed index ${ARCHIVE_INDEX} is larger than the 128 MiB cap"; return 0
+  fi
+  if [[ "$by_hash" -eq 1 ]]; then
+    idx_url="${MIRROR}/dists/${suite}/${comp}/binary-${idx_arch}/by-hash/SHA256/${hash}"
+  else
+    idx_url="${MIRROR}/${idx_path}"
+  fi
+  idx_file="${WORK}/Packages.${decomp}"
+  idx_code="$(fetch "$idx_url" "$idx_file" 134217728)"
+  if [[ "$idx_code" != "200" || ! -f "$idx_file" ]]; then
+    arch_done not-verified "could not fetch ${ARCHIVE_INDEX} (http ${idx_code:-none})"; return 0
+  fi
+  got_size="$(wc -c <"$idx_file" | tr -d ' ')"
+  got_hash="$(sha256sum -- "$idx_file" | cut -d' ' -f1)"
+  if [[ "$got_size" != "$size" || "$got_hash" != "$hash" ]]; then
+    arch_done failed "downloaded ${ARCHIVE_INDEX} does not match the size and SHA256 in the signed InRelease; possible tampering"; return 0
+  fi
+
+  # Stream-parse the index for the exact package/version/architecture stanza.
+  # Lines are clipped, every stage is time and memory bounded, and the awk
+  # program stops after two matches.
+  local dec_cmd=(xz -dc -T1)
+  [[ "$decomp" == gz ]] && dec_cmd=(gzip -dc)
+  # shellcheck disable=SC2016  # awk program
+  stanza_out="$(decoder "${dec_cmd[@]}" -- "$idx_file" 2>/dev/null | decoder cut -b 1-4096 | PV_P="$PKG" PV_V="$VERSION" PV_A="$ARCH" decoder awk '
+    function flush() {
+      if (p == ENVIRON["PV_P"] && v == ENVIRON["PV_V"] && a == ENVIRON["PV_A"]) {
+        n++; printf "%s\t%s\n", substr(fn, 1, 512), substr(sh, 1, 64)
+        if (n >= 2) exit
+      }
+      p = v = a = fn = sh = ""
+    }
+    /^$/ { flush(); next }
+    /^Package: / { p = substr($0, 10) }
+    /^Version: / { v = substr($0, 10) }
+    /^Architecture: / { a = substr($0, 15) }
+    /^Filename: / { fn = substr($0, 11) }
+    /^SHA256: / { sh = substr($0, 9) }
+    END { flush() }
+  '; printf '@@rc %s' "${PIPESTATUS[*]}")"
+  local rc_all="${stanza_out##*@@rc }"
+  stanza_out="${stanza_out%@@rc *}"
+  stanza_out="${stanza_out%$'\n'}"
+  read -r r1 r2 r3 <<<"$rc_all"
+  # r1/r2 may be 141 (SIGPIPE) only when awk stopped early after two matches.
+  if [[ "$r3" != "0" ]] || { [[ "$r1" != "0" && "$r1" != "141" ]] || [[ "$r2" != "0" && "$r2" != "141" ]]; }; then
+    arch_done not-verified "could not parse ${ARCHIVE_INDEX} (decoder failed or timed out)"; return 0
+  fi
+  if [[ -z "$stanza_out" ]]; then
+    arch_done not-verified "${PKG}=${VERSION} (${ARCH}) is not in the current signed index (superseded or rotated out); cannot vouch for it"; return 0
+  fi
+  if [[ "$stanza_out" == *$'\n'* ]]; then
+    arch_done not-verified "the signed index lists ${PKG}=${VERSION} (${ARCH}) more than once; refusing to guess"; return 0
+  fi
+  IFS=$'\t' read -r sf ss <<<"$stanza_out"
+  if [[ "$ss" != "$APT_SHA" || "$sf" != "$FILENAME" ]]; then
+    arch_done failed "signed archive index disagrees with the target's apt metadata: possible tampering"; return 0
+  fi
+  arch_done verified "the .deb SHA256 and Filename match the stanza in the GPG-signed ${ARCHIVE_INDEX}"
+}
 
 code="$(fetch "$DEB_URL" "$DEB")"
 if [[ "$code" == "404" && "$MIRROR" == *debian.org* ]]; then
@@ -566,6 +784,7 @@ if [[ "$code" == "404" && "$MIRROR" == *debian.org* ]]; then
     snap_hash="$(jq -r --arg a "$ARCH" '[.result[] | select(.architecture == $a) | .hash][0] // empty' "$meta_json" 2>/dev/null || true)"
     if [[ "$snap_hash" =~ ^[0-9a-f]{40,64}$ ]]; then
       DEB_URL="https://snapshot.debian.org/file/${snap_hash}"
+      USED_SNAPSHOT=1
       code="$(fetch "$DEB_URL" "$DEB")"
     fi
   fi
@@ -590,6 +809,10 @@ if [[ "$DEB_SHA" != "$APT_SHA" ]]; then
   finish error "downloaded .deb sha256 does not equal the target apt SHA256 (corrupt download, wrong mirror, or tampering); not trusting it"
 fi
 DEB_META_MATCH="true"
+
+# Independent archive check. Its outcome is only recorded here; the verdict step
+# decides precedence (an established mismatch always wins over a failed check).
+archive_check
 
 # The archive must be the package the target claimed (name, version, arch).
 # Control output is capped at 4 KiB; decoders are time and memory bounded.
@@ -730,6 +953,11 @@ fi
 [[ -z "$OUTSIDE_FAIL" ]] || finish error "$OUTSIDE_FAIL"
 if [[ -n "$SHA_OUTSIDE" && "$SHA_OUTSIDE" != "$SHA_EXTRACTED" ]]; then
   finish mismatch "outside read differs from the package file"
+fi
+# Every mismatch check above takes precedence over a failed archive check; the
+# archive failure comes next so it is not hidden by a plain consistency error.
+if [[ "$ARCHIVE_STATE" == "failed" ]]; then
+  finish error "archive signature check failed: ${ARCHIVE_REASON}"
 fi
 if [[ -n "$SHA_OUTSIDE" && "$OUTSIDE_SIZE" != "$MEMBER_SIZE" ]]; then
   SHA_OUTSIDE=""
