@@ -1267,12 +1267,18 @@ arch_reason() { jq -r .archive_signature_detail.reason <<<"${output}"; }
   [[ "$(arch_state)" == "verified" ]]
 }
 
-@test "archive: signed Date older than the default 14 days -> not-verified" {
-  AR_UNTIL=none AR_DATE="$(days_ago 40)" build_archive
+@test "archive: signed Date older than the default 120 days -> not-verified" {
+  AR_UNTIL=none AR_DATE="$(days_ago 150)" build_archive
   arch_run
   [[ "${status}" -eq 4 ]]
   [[ "$(arch_state)" == "not-verified" ]]
-  [[ "$(arch_reason)" == "signed index is older than 14 days" ]]
+  [[ "$(arch_reason)" == "signed index is older than 120 days" ]]
+}
+
+@test "archive: a Date 100 days old is accepted by the default window" {
+  AR_UNTIL=none AR_DATE="$(days_ago 100)" build_archive
+  arch_run
+  [[ "$(arch_state)" == "verified" ]]
 }
 
 @test "archive: --max-index-age-days widens or narrows the window" {
