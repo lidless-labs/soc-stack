@@ -66,9 +66,9 @@ case "${url}" in
     code="$(cat "${MOCKDIR}/ir_code" 2>/dev/null || echo 404)"
     [[ "${code}" == 200 ]] && cp "${MOCKDIR}/InRelease" "${out}"
     printf '%s' "${code}" ;;
-  */dists/*/Packages.xz | */dists/*/by-hash/SHA256/*)
+  */dists/*/Packages.xz | */dists/*/Packages.gz | */dists/*/by-hash/SHA256/*)
     code="$(cat "${MOCKDIR}/idx_code" 2>/dev/null || echo 404)"
-    [[ "${code}" == 200 ]] && cp "${MOCKDIR}/Packages.xz" "${out}"
+    [[ "${code}" == 200 ]] && cp "${MOCKDIR}/index_payload" "${out}"
     printf '%s' "${code}" ;;
   *)
     code="$(cat "${MOCKDIR}/pool_code" 2>/dev/null || echo 200)"
@@ -210,7 +210,7 @@ EOF
 }
 
 @test "match with outside view: all three hashes equal, exit 0" {
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   assert_success
   [[ "$(jq -r .verdict <<<"${output}")" == "match" ]]
   [[ "$(jq -r .trust <<<"${output}")" == "outside-verified" ]]
@@ -220,7 +220,7 @@ EOF
 }
 
 @test "markdown format emits a compact block with the verdict" {
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --format md
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check --format md
   assert_success
   assert_output --partial "verdict: **match**"
   assert_output --partial "trust: **outside-verified**"
@@ -237,7 +237,7 @@ EOF
 
 @test "mismatch (outside): outside read differs, exit 1" {
   write_outside "$(sha_of tampered-outside)"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 1 ]]
   [[ "$(jq -r .verdict <<<"${output}")" == "mismatch" ]]
   [[ "$(jq -r .reason <<<"${output}")" == *outside* ]]
@@ -245,7 +245,7 @@ EOF
 
 @test "outside view requested but unreadable is an error, exit 3" {
   printf '@@error\nno rootfs in pct config\n' >"${MOCKDIR}/resp_outside"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 3 ]]
   [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
 }
@@ -303,7 +303,7 @@ MOCK
 
 @test "snapshot.debian.org fallback is used when the pool no longer has the version" {
   echo 404 >"${MOCKDIR}/pool_code"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   assert_success
   grep -q 'snapshot.debian.org/file/' "${MOCKDIR}/curl.log"
   [[ "$(jq -r .deb_url <<<"${output}")" == https://snapshot.debian.org/file/* ]]
@@ -328,7 +328,7 @@ MOCK
 # Intentionally changed from v1 (which asserted "-x" only): the tool no longer
 # extracts to disk, so the only allowed modes are -f and --fsys-tarfile.
 @test "dpkg-deb is only ever called with -f or --fsys-tarfile (never extracts, installs or runs scripts)" {
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   assert_success
   [[ -s "${MOCKDIR}/dpkg-deb.log" ]]
   run grep -Ev '^(-f |--fsys-tarfile )' "${MOCKDIR}/dpkg-deb.log"
@@ -381,7 +381,7 @@ MOCK
 }
 
 @test "temp dir is removed after match, mismatch, and error runs" {
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   assert_success
   [[ -z "$(ls -A "${RUNTMP}")" ]]
   write_ownership "$(sha_of tampered)"
@@ -395,7 +395,7 @@ MOCK
 }
 
 @test "--inside-via-pct runs inside commands through pct exec on the pve host" {
-  run "${TOOL}" --inside-via-pct --pve-host pve1 --ctid 123 --path /usr/bin/chsh
+  run "${TOOL}" --inside-via-pct --pve-host pve1 --ctid 123 --no-archive-check --path /usr/bin/chsh
   assert_success
   grep -q 'pct exec 123 -- sh -s' "${MOCKDIR}/ssh.log"
 }
@@ -417,7 +417,7 @@ MOCK
 }
 
 @test "outside hash is taken from the caller path, never the target-supplied resolved path" {
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   assert_success
   # the outside script is given the caller-supplied path as its second argument
   grep -Eq 'sh -s -- 123 /usr/bin/chsh$' "${MOCKDIR}/ssh.log"
@@ -433,7 +433,7 @@ MOCK
 
 @test "outside stat shows a symlink (not a regular file): error, exit 3" {
   sed -i 's/^regular$/symlink/' "${MOCKDIR}/resp_outside"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 3 ]]
   [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
   [[ "$(jq -r .reason <<<"${output}")" == *"not a regular file"* ]]
@@ -441,7 +441,7 @@ MOCK
 
 @test "directory-backed rootfs: outside view is null with a reason, match-unverified, exit 4" {
   printf '@@kind\ndir\n@@end\n' >"${MOCKDIR}/resp_outside"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 4 ]]
   [[ "$(jq -r .verdict <<<"${output}")" == "match-unverified" ]]
   [[ "$(jq -r .trust <<<"${output}")" == "self-reported" ]]
@@ -456,30 +456,30 @@ MOCK
 
 @test "outside differs from package while inside matches: mismatch, exit 1, trust outside-verified" {
   write_outside "$(sha_of lie-from-hypervisor)"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 1 ]]
   [[ "$(jq -r .trust <<<"${output}")" == "outside-verified" ]]
 }
 
 @test ".deb control fields differing from the claimed package, version or arch: error, exit 3" {
   echo other-pkg >"${MOCKDIR}/ctrl_pkg"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 3 ]]
   [[ "$(jq -r .reason <<<"${output}")" == *"control fields"* ]]
   rm "${MOCKDIR}/ctrl_pkg"
   echo 9:9.9-9 >"${MOCKDIR}/ctrl_ver"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 3 ]]
   rm "${MOCKDIR}/ctrl_ver"
   echo arm64 >"${MOCKDIR}/ctrl_arch"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 3 ]]
   [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
 }
 
 @test "package member is a symlink: error, exit 3" {
   echo symlink >"${MOCKDIR}/tar_mode"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 3 ]]
   [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
   [[ "$(jq -r .reason <<<"${output}")" == *"link"* ]]
@@ -487,7 +487,7 @@ MOCK
 
 @test "package member is a hardlink: error, exit 3" {
   echo hardlink >"${MOCKDIR}/tar_mode"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 3 ]]
   [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
   [[ "$(jq -r .reason <<<"${output}")" == *"link"* ]]
@@ -495,15 +495,15 @@ MOCK
 
 @test "package without the member is package-unknown; duplicate members are an error" {
   echo absent >"${MOCKDIR}/tar_mode"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 2 ]]
   echo dup >"${MOCKDIR}/tar_mode"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 3 ]]
 }
 
 @test "nothing is extracted to disk: no files appear under the work area during a run" {
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   assert_success
   # the mock builds its trees under MOCKDIR and removes them; the runner temp is clean
   [[ -z "$(ls -A "${RUNTMP}")" ]]
@@ -562,7 +562,7 @@ hostile_divert() {
 
 @test "markdown: hostile apt origin suite is escaped" {
   sed -i 's#trixie/main amd64#tri|x`i/m*in amd64#' "${MOCKDIR}/resp_meta"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --format md
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check --format md
   assert_success
   [[ "${output}" != *'tri|x'* ]]
   [[ "${output}" == *'tri\|x\`i/m\*in'* ]]
@@ -583,7 +583,7 @@ reason_of() { jq -r .reason <<<"${output}"; }
 
 @test "outside returns the empty-input hash for a non-empty file (failed debugfs read): error, exit 3" {
   write_outside e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 15 0
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 3 ]]
   [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
   [[ "$(reason_of)" == *"incomplete"* ]]
@@ -592,7 +592,7 @@ reason_of() { jq -r .reason <<<"${output}"; }
 
 @test "outside byte count differs from the stat size: error, exit 3" {
   write_outside "${PKG_SHA}" 15 7
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 3 ]]
   [[ "$(reason_of)" == *"read 7 bytes"* ]]
 }
@@ -624,7 +624,7 @@ reason_of() { jq -r .reason <<<"${output}"; }
 @test "inside mismatch is reported even when the outside ssh fails: exit 1, reason recorded" {
   write_ownership "$(sha_of tampered)"
   : >"${MOCKDIR}/ssh_fail_outside"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 1 ]]
   [[ "$(jq -r .verdict <<<"${output}")" == "mismatch" ]]
   [[ "$(reason_of)" == *"outside view also failed"* ]]
@@ -634,7 +634,7 @@ reason_of() { jq -r .reason <<<"${output}"; }
 @test "inside mismatch is reported even when the outside file is not regular: exit 1" {
   write_ownership "$(sha_of tampered)"
   sed -i 's/^regular$/symlink/' "${MOCKDIR}/resp_outside"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 1 ]]
   [[ "$(jq -r .verdict <<<"${output}")" == "mismatch" ]]
 }
@@ -642,7 +642,7 @@ reason_of() { jq -r .reason <<<"${output}"; }
 @test "usrmerge alias: dpkg registers /bin/chsh, canonical /usr/bin/chsh is verified" {
   write_ownership "${PKG_SHA}" /bin/chsh
   echo aliased >"${MOCKDIR}/tar_mode"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   assert_success
   [[ "$(jq -r .verdict <<<"${output}")" == "match" ]]
   [[ "$(jq -r .dpkg_path <<<"${output}")" == "/bin/chsh" ]]
@@ -703,14 +703,14 @@ MOCK
 
 @test "more than two matching members: stops after two and is an error, exit 3" {
   echo many >"${MOCKDIR}/tar_mode"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 3 ]]
   [[ "$(reason_of)" == *"more than one entry"* ]]
 }
 
 @test "decoder timeout yields error, exit 3 (decompression-bomb guard)" {
   echo hang >"${MOCKDIR}/tar_mode"
-  PV_DECODER_TIMEOUT=1 run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  PV_DECODER_TIMEOUT=1 run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 3 ]]
   [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
   [[ "$(reason_of)" == *"could not list"* ]]
@@ -733,7 +733,7 @@ MOCK
 
 @test "hardlink reason names the link target" {
   echo hardlink >"${MOCKDIR}/tar_mode"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 3 ]]
   [[ "$(reason_of)" == *"verify that path instead"* ]]
   [[ "$(reason_of)" == *"/usr/bin/aaa"* ]]
@@ -748,7 +748,7 @@ MOCK
   run grep -c -e 'decoder dpkg-deb --fsys-tarfile --threads-max=1' "${TOOL}"
   [[ "${output}" -ge 2 ]]
   # runtime: every recorded --fsys-tarfile call had it
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   assert_success
   grep -q -e '--fsys-tarfile' "${MOCKDIR}/dpkg-deb.log"
   run bash -c "grep -e '--fsys-tarfile' '${MOCKDIR}/dpkg-deb.log' | grep -v -e '--threads-max=1'"
@@ -807,7 +807,7 @@ M
 @test "usrmerge alias: a diversion on the alias path is package-unknown, exit 2" {
   ALIAS_DIVERT_PKG=localpkg write_ownership "${PKG_SHA}" /bin/chsh
   echo aliased >"${MOCKDIR}/tar_mode"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 2 ]]
   [[ "$(jq -r .verdict <<<"${output}")" == "package-unknown" ]]
   [[ "$(reason_of)" == *"alias path /bin/chsh"*"diversion"* ]]
@@ -817,7 +817,7 @@ M
 @test "usrmerge alias: a diverted truename on the alias path is package-unknown, exit 2" {
   ALIAS_DIVERT_TRUE=/bin/chsh.distrib write_ownership "${PKG_SHA}" /bin/chsh
   echo aliased >"${MOCKDIR}/tar_mode"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 2 ]]
   [[ "$(reason_of)" == *"diversion"* ]]
 }
@@ -825,7 +825,7 @@ M
 @test "usrmerge alias: alias that does not resolve to the canonical path is ignored, exit 2" {
   ALIAS_RESOLVES=/opt/elsewhere/chsh write_ownership "${PKG_SHA}" /bin/chsh
   echo aliased >"${MOCKDIR}/tar_mode"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 2 ]]
   [[ "$(reason_of)" == *"alias is ignored"* ]]
   [[ ! -s "${MOCKDIR}/curl.log" ]]
@@ -840,7 +840,7 @@ M
 
 @test "crafted PAX link target (~100 KB) stays bounded: member is rejected as a link, exit 3" {
   echo longlink >"${MOCKDIR}/tar_mode"
-  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123
+  run "${TOOL}" --host target1 --path /usr/bin/chsh --pve-host pve1 --ctid 123 --no-archive-check
   [[ "${status}" -eq 3 ]]
   [[ "$(reason_of)" == *"link or special entry"* ]]
   [[ "${#output}" -lt 4000 ]]
@@ -913,34 +913,49 @@ teardown_file() {
   gpgconf --homedir "${GPGDIR_B}" --kill all >/dev/null 2>&1 || true
 }
 
-# build_archive: write MOCKDIR/Packages.xz and a clearsigned MOCKDIR/InRelease.
-# Knobs (env): AR_PKG (default passwd), AR_STANZA_SHA (default the .deb sha),
-# AR_FILENAME, AR_UNTIL (Valid-Until value, default far future, "none" omits),
-# AR_SIGNERS ("A", "B" or "A B"), AR_BYHASH (yes|no).
+days_ago() { date -u -d "$1 days ago" '+%a, %d %b %Y %H:%M:%S UTC'; }
+days_ahead() { date -u -d "$1 days" '+%a, %d %b %Y %H:%M:%S UTC'; }
+
+# build_archive: write the index payload and a clearsigned MOCKDIR/InRelease.
+# Knobs (env): AR_PKG (passwd), AR_STANZA_SHA (the .deb sha), AR_FILENAME,
+# AR_STANZA_ARCH (amd64), AR_DUP (1 adds a second identical stanza),
+# AR_DATE (now; "none" omits), AR_UNTIL (far future; "none" omits),
+# AR_SIGNERS ("A", "B" or "A B"), AR_BYHASH (yes|no), AR_ONLYGZ (1 lists and
+# serves only Packages.gz).
 build_archive() {
   local pkg="${AR_PKG:-passwd}" sha="${AR_STANZA_SHA:-${DEB_SHA}}"
   local fn="${AR_FILENAME:-pool/main/s/shadow/passwd_4.17.4-2_amd64.deb}"
   local until="${AR_UNTIL:-Mon, 01 Jan 2057 00:00:00 UTC}" signers="${AR_SIGNERS:-A}"
+  local adate="${AR_DATE:-$(date -u '+%a, %d %b %Y %H:%M:%S UTC')}" sarch="${AR_STANZA_ARCH:-amd64}"
+  local stanza
+  stanza="$(printf 'Package: %s\nVersion: 1:4.17.4-2\nArchitecture: %s\nFilename: %s\nSHA256: %s\nDescription: y\n\n' "${pkg}" "${sarch}" "${fn}" "${sha}")"
   {
     printf 'Package: other\nVersion: 1.0\nArchitecture: amd64\nFilename: pool/main/o/other/other_1.0_amd64.deb\nSHA256: %s\nDescription: x\n multi line\n\n' "$(sha_of other)"
-    printf 'Package: %s\nVersion: 1:4.17.4-2\nArchitecture: amd64\nFilename: %s\nSHA256: %s\nDescription: y\n\n' "${pkg}" "${fn}" "${sha}"
-  } | xz -c >"${MOCKDIR}/Packages.xz"
-  local ihash isize
-  ihash="$(sha256sum "${MOCKDIR}/Packages.xz" | cut -d' ' -f1)"
-  isize="$(wc -c <"${MOCKDIR}/Packages.xz" | tr -d ' ')"
+    printf '%s\n\n' "${stanza}"
+    [[ "${AR_DUP:-0}" == 1 ]] && printf '%s\n\n' "${stanza}"
+  } >"${MOCKDIR}/packages.txt"
+  xz -c <"${MOCKDIR}/packages.txt" >"${MOCKDIR}/Packages.xz"
+  gzip -c <"${MOCKDIR}/packages.txt" >"${MOCKDIR}/Packages.gz"
+  local xzline="" gzline ihash isize payload=Packages.xz
+  [[ "${AR_ONLYGZ:-0}" == 1 ]] && payload=Packages.gz
+  cp "${MOCKDIR}/${payload}" "${MOCKDIR}/index_payload"
+  gzline=" $(sha256sum "${MOCKDIR}/Packages.gz" | cut -d' ' -f1) $(wc -c <"${MOCKDIR}/Packages.gz" | tr -d ' ') main/binary-amd64/Packages.gz"
+  [[ "${AR_ONLYGZ:-0}" == 1 ]] || xzline=" $(sha256sum "${MOCKDIR}/Packages.xz" | cut -d' ' -f1) $(wc -c <"${MOCKDIR}/Packages.xz" | tr -d ' ') main/binary-amd64/Packages.xz"
   {
-    printf 'Origin: Debian\nSuite: stable\nCodename: trixie\nDate: Sat, 01 Jan 2050 00:00:00 UTC\n'
+    printf 'Origin: Debian\nSuite: stable\nCodename: trixie\n'
+    [[ "${adate}" == none ]] || printf 'Date: %s\n' "${adate}"
     [[ "${until}" == none ]] || printf 'Valid-Until: %s\n' "${until}"
-    printf 'Acquire-By-Hash: %s\nSHA256:\n %s %s main/binary-amd64/Packages.xz\n %s 10 main/binary-amd64/Packages.gz\n' \
-      "${AR_BYHASH:-yes}" "${ihash}" "${isize}" "$(sha_of gz)"
+    printf 'Acquire-By-Hash: %s\nSHA256:\n' "${AR_BYHASH:-yes}"
+    [[ -z "${xzline}" ]] || printf '%s\n' "${xzline}"
+    printf '%s\n' "${gzline}"
   } >"${MOCKDIR}/release.txt"
   local args=() k
   for k in ${signers}; do
     local dir="GPGDIR_${k}"
     args+=(--homedir "${!dir}" --local-user "$(gpg --homedir "${!dir}" --with-colons --list-keys | awk -F: '/^fpr/ {print $10; exit}')")
   done
-  # Two signers need both secret keys in one homedir: import B's into A's.
   if [[ "${signers}" == "A B" ]]; then
+    # Two signers need both secret keys in one homedir: import B's into A's.
     gpg --homedir "${GPGDIR_A}" --batch --pinentry-mode loopback --passphrase '' --yes \
       --import "${BATS_FILE_TMPDIR}/secB.asc" >/dev/null 2>&1
     gpg --homedir "${GPGDIR_A}" --batch --pinentry-mode loopback --passphrase '' --yes --clearsign \
@@ -952,6 +967,28 @@ build_archive() {
   echo 200 >"${MOCKDIR}/ir_code"
   echo 200 >"${MOCKDIR}/idx_code"
 }
+
+# mock_gpgv <exit status | hang> <status line>...: replace gpgv with a canned
+# verifier that writes the signed text (release.txt) to --output.
+mock_gpgv() {
+  local rc="$1"; shift
+  printf '%s\n' "$@" >"${MOCKDIR}/gpgv_status"
+  echo "${rc}" >"${MOCKDIR}/gpgv_rc"
+  cat >"${MOCKBIN}/gpgv" <<'MOCK'
+#!/usr/bin/env bash
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in --output) out="$2"; shift 2 ;; --homedir | --keyring | --status-fd) shift 2 ;; *) shift ;; esac
+done
+rc="$(cat "${MOCKDIR}/gpgv_rc")"
+[[ "${rc}" == hang ]] && exec sleep 30
+cat "${MOCKDIR}/gpgv_status" >&3
+cp "${MOCKDIR}/release.txt" "${out}"
+exit "${rc}"
+MOCK
+  chmod +x "${MOCKBIN}/gpgv"
+}
+VALID_LINE='[GNUPG:] VALIDSIG 4CB50190207B4758A3F73A796ED0E7B82643E131 2026-09-12 1789199779 0 4 0 22 8 01 4CB50190207B4758A3F73A796ED0E7B82643E131'
 
 arch_run() { # extra args pass through
   run "${TOOL}" --host target1 --path /usr/bin/chsh --keyring "${BATS_FILE_TMPDIR}/keyA.gpg" "$@"
@@ -980,13 +1017,78 @@ arch_reason() { jq -r .archive_signature_detail.reason <<<"${output}"; }
   ! grep -q '/by-hash/' "${MOCKDIR}/curl.log"
 }
 
-@test "archive: signature by a key not in the keyring -> failed, exit 3" {
+@test "archive: Packages.gz fallback when the release lists only gz" {
+  AR_ONLYGZ=1 build_archive
+  arch_run
+  [[ "$(arch_state)" == "verified" ]]
+  [[ "$(jq -r .archive_signature_detail.index <<<"${output}")" == "main/binary-amd64/Packages.gz" ]]
+}
+
+@test "archive: -security suite uses its own InRelease URL" {
+  sed -i 's#500 http://deb.debian.org/debian trixie/main#500 http://security.debian.org/debian-security trixie-security/main#' "${MOCKDIR}/resp_meta"
+  build_archive
+  arch_run
+  [[ "$(arch_state)" == "verified" ]]
+  [[ "$(jq -r .archive_signature_detail.suite <<<"${output}")" == "trixie-security" ]]
+  grep -qx 'https://security.debian.org/debian-security/dists/trixie-security/InRelease' "${MOCKDIR}/curl.log"
+}
+
+@test "archive: an arch all stanza is found in the binary-amd64 index" {
+  sed -i -e '3s/amd64/all/' -e 's/^Architecture: amd64/Architecture: all/' "${MOCKDIR}/resp_meta"
+  echo all >"${MOCKDIR}/ctrl_arch"
+  AR_STANZA_ARCH=all AR_FILENAME=pool/main/s/shadow/passwd_4.17.4-2_amd64.deb build_archive
+  arch_run
+  [[ "$(arch_state)" == "verified" ]]
+  [[ "$(jq -r .arch <<<"${output}")" == "all" ]]
+}
+
+@test "archive: duplicate stanza in the signed index -> not-verified" {
+  AR_DUP=1 build_archive
+  arch_run
+  [[ "$(arch_state)" == "not-verified" ]]
+  [[ "$(arch_reason)" == *"more than once"* ]]
+}
+
+@test "archive: default keyring for a Debian origin comes from the Debian keyring path" {
+  build_archive
+  PV_DEBIAN_KEYRING="${BATS_FILE_TMPDIR}/keyA.gpg" PV_UBUNTU_KEYRING=/nonexistent/ubuntu.gpg \
+    run "${TOOL}" --host target1 --path /usr/bin/chsh
+  [[ "$(arch_state)" == "verified" ]]
+  PV_DEBIAN_KEYRING=/nonexistent/debian.gpg PV_UBUNTU_KEYRING="${BATS_FILE_TMPDIR}/keyA.gpg" \
+    run "${TOOL}" --host target1 --path /usr/bin/chsh
+  [[ "$(arch_state)" == "not-verified" ]]
+  [[ "$(arch_reason)" == *"/nonexistent/debian.gpg"* ]]
+}
+
+@test "archive: default keyring for an Ubuntu origin comes from the Ubuntu keyring path" {
+  sed -i 's#500 http://deb.debian.org/debian trixie/main#500 http://archive.ubuntu.com/ubuntu noble-updates/main#' "${MOCKDIR}/resp_meta"
+  build_archive
+  PV_DEBIAN_KEYRING=/nonexistent/debian.gpg PV_UBUNTU_KEYRING="${BATS_FILE_TMPDIR}/keyA.gpg" \
+    run "${TOOL}" --host target1 --path /usr/bin/chsh
+  [[ "$(arch_state)" == "verified" ]]
+  grep -qx 'https://archive.ubuntu.com/ubuntu/dists/noble-updates/InRelease' "${MOCKDIR}/curl.log"
+  PV_DEBIAN_KEYRING="${BATS_FILE_TMPDIR}/keyA.gpg" PV_UBUNTU_KEYRING=/nonexistent/ubuntu.gpg \
+    run "${TOOL}" --host target1 --path /usr/bin/chsh
+  [[ "$(arch_state)" == "not-verified" ]]
+  [[ "$(arch_reason)" == *"/nonexistent/ubuntu.gpg"* ]]
+}
+
+@test "archive: signature by a key not in the keyring -> not-verified, keyring may be stale" {
   AR_SIGNERS=B build_archive
   arch_run
-  [[ "${status}" -eq 3 ]]
-  [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
-  [[ "$(arch_state)" == "failed" ]]
-  [[ "$(arch_reason)" == *"no valid signature"* ]]
+  [[ "${status}" -eq 4 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "match-unverified" ]]
+  [[ "$(arch_state)" == "not-verified" ]]
+  [[ "$(arch_reason)" == *"no signature from a key in"* ]]
+  [[ "$(arch_reason)" == *"keyring may be stale"* ]]
+}
+
+@test "archive: no gpgv status lines at all -> not-verified" {
+  build_archive
+  mock_gpgv 2
+  arch_run
+  [[ "$(arch_state)" == "not-verified" ]]
+  [[ "$(arch_reason)" == *"keyring may be stale"* ]]
 }
 
 @test "archive: tampered InRelease body -> failed, exit 3" {
@@ -996,6 +1098,56 @@ arch_reason() { jq -r .archive_signature_detail.reason <<<"${output}"; }
   [[ "${status}" -eq 3 ]]
   [[ "$(arch_state)" == "failed" ]]
   [[ "$(arch_reason)" == *"BADSIG"* ]]
+}
+
+@test "archive: EXPKEYSIG and REVKEYSIG next to a valid signature -> failed" {
+  build_archive
+  local st
+  for st in EXPKEYSIG REVKEYSIG; do
+    mock_gpgv 1 "${VALID_LINE}" "[GNUPG:] ${st} 6ED0E7B82643E131 Test Key"
+    arch_run
+    [[ "${status}" -eq 3 ]]
+    [[ "$(arch_state)" == "failed" ]]
+    [[ "$(arch_reason)" == *"${st}"* ]]
+  done
+}
+
+@test "archive: ERRSIG with a reason other than a missing key -> not-verified" {
+  build_archive
+  mock_gpgv 2 "${VALID_LINE}" '[GNUPG:] ERRSIG 78DBA3BC47EF2265 1 8 01 1789199779 4 B8E5F13B'
+  arch_run
+  [[ "$(arch_state)" == "not-verified" ]]
+  [[ "$(arch_reason)" == *"other than a missing key"* ]]
+}
+
+@test "archive: ERRSIG reason 9 (missing key) beside a valid signature is tolerated" {
+  build_archive
+  mock_gpgv 2 "${VALID_LINE}" '[GNUPG:] ERRSIG 78DBA3BC47EF2265 1 8 01 1789199779 9 B8E5F13B' '[GNUPG:] NO_PUBKEY 78DBA3BC47EF2265'
+  arch_run
+  [[ "$(arch_state)" == "verified" ]]
+}
+
+@test "archive: NODATA or FAILURE status -> not-verified" {
+  build_archive
+  local st
+  for st in NODATA FAILURE; do
+    mock_gpgv 2 "${VALID_LINE}" "[GNUPG:] ${st} 1"
+    arch_run
+    [[ "$(arch_state)" == "not-verified" ]]
+    [[ "$(arch_reason)" == *"NODATA or FAILURE"* ]]
+  done
+}
+
+@test "archive: gpgv non-zero exit or timeout after a valid line -> not-verified" {
+  build_archive
+  mock_gpgv 1 "${VALID_LINE}"
+  arch_run
+  [[ "$(arch_state)" == "not-verified" ]]
+  [[ "$(arch_reason)" == *"gpgv exited with status 1"* ]]
+  mock_gpgv hang "${VALID_LINE}"
+  PV_DECODER_TIMEOUT=1 arch_run
+  [[ "$(arch_state)" == "not-verified" ]]
+  [[ "$(arch_reason)" == *"gpgv exited with status"* ]]
 }
 
 @test "archive: one good signature plus one unknown-key signature -> verified" {
@@ -1008,14 +1160,22 @@ arch_reason() { jq -r .archive_signature_detail.reason <<<"${output}"; }
   [[ "$(jq -r '.archive_signature_detail.signer_fingerprints | length' <<<"${output}")" -eq 1 ]]
 }
 
-@test "archive: downloaded index differs from the signed hash -> failed" {
-  build_archive
-  { printf 'Package: extra\n\n'; xz -dc "${MOCKDIR}/Packages.xz"; } | xz -c >"${MOCKDIR}/Packages.xz.new"
-  mv "${MOCKDIR}/Packages.xz.new" "${MOCKDIR}/Packages.xz"
+@test "archive: by-hash index that differs from the signed hash -> failed" {
+  AR_BYHASH=yes build_archive
+  { printf 'Package: extra\n\n'; cat "${MOCKDIR}/packages.txt"; } | xz -c >"${MOCKDIR}/index_payload"
   arch_run
   [[ "${status}" -eq 3 ]]
   [[ "$(arch_state)" == "failed" ]]
   [[ "$(arch_reason)" == *"does not match the size and SHA256"* ]]
+}
+
+@test "archive: plain-path index that differs from the signed hash -> not-verified (mid-sync)" {
+  AR_BYHASH=no build_archive
+  { printf 'Package: extra\n\n'; cat "${MOCKDIR}/packages.txt"; } | xz -c >"${MOCKDIR}/index_payload"
+  arch_run
+  [[ "${status}" -eq 4 ]]
+  [[ "$(arch_state)" == "not-verified" ]]
+  [[ "$(arch_reason)" == *"index changed during fetch (mirror mid-sync) or was altered"* ]]
 }
 
 @test "archive: signed stanza SHA256 disagrees with the target apt SHA256 -> failed, exit 3" {
@@ -1063,12 +1223,12 @@ arch_reason() { jq -r .archive_signature_detail.reason <<<"${output}"; }
   [[ "$(arch_state)" == "not-verified" ]]
 }
 
-@test "archive: --no-archive-check -> not-verified and no extra downloads" {
+@test "archive: --no-archive-check -> not-verified with a clear reason and no extra downloads" {
   build_archive
   arch_run --no-archive-check
   [[ "${status}" -eq 4 ]]
   [[ "$(arch_state)" == "not-verified" ]]
-  [[ "$(arch_reason)" == *"--no-archive-check"* ]]
+  [[ "$(arch_reason)" == "disabled by --no-archive-check" ]]
   [[ "$(wc -l <"${MOCKDIR}/curl.log")" -eq 1 ]]
 }
 
@@ -1093,10 +1253,63 @@ arch_reason() { jq -r .archive_signature_detail.reason <<<"${output}"; }
   [[ "$(arch_reason)" == *"expired"* ]]
 }
 
-@test "archive: missing Valid-Until is accepted" {
+@test "archive: unparseable Valid-Until -> failed" {
+  AR_UNTIL="not a date" build_archive
+  arch_run
+  [[ "${status}" -eq 3 ]]
+  [[ "$(arch_state)" == "failed" ]]
+  [[ "$(arch_reason)" == *"Valid-Until"* ]]
+}
+
+@test "archive: missing Valid-Until is accepted when the Date is fresh" {
   AR_UNTIL=none build_archive
   arch_run
   [[ "$(arch_state)" == "verified" ]]
+}
+
+@test "archive: signed Date older than the default 14 days -> not-verified" {
+  AR_UNTIL=none AR_DATE="$(days_ago 40)" build_archive
+  arch_run
+  [[ "${status}" -eq 4 ]]
+  [[ "$(arch_state)" == "not-verified" ]]
+  [[ "$(arch_reason)" == "signed index is older than 14 days" ]]
+}
+
+@test "archive: --max-index-age-days widens or narrows the window" {
+  AR_UNTIL=none AR_DATE="$(days_ago 20)" build_archive
+  arch_run --max-index-age-days 30
+  [[ "$(arch_state)" == "verified" ]]
+  arch_run --max-index-age-days 7
+  [[ "$(arch_state)" == "not-verified" ]]
+  [[ "$(arch_reason)" == "signed index is older than 7 days" ]]
+}
+
+@test "archive: --max-index-age-days must be an integer from 1 to 365" {
+  local v
+  for v in 0 366 abc 1.5 -1 ""; do
+    run "${TOOL}" --host t --path /usr/bin/chsh --max-index-age-days "${v}"
+    [[ "${status}" -eq 3 ]]
+  done
+  run "${TOOL}" --host t --path /usr/bin/chsh --max-index-age-days
+  [[ "${status}" -eq 3 ]]
+}
+
+@test "archive: signed Date more than a day in the future -> not-verified" {
+  AR_UNTIL=none AR_DATE="$(days_ahead 3)" build_archive
+  arch_run
+  [[ "$(arch_state)" == "not-verified" ]]
+  [[ "$(arch_reason)" == "runner clock or index date is wrong"* ]]
+}
+
+@test "archive: missing or unparseable Date -> not-verified" {
+  AR_UNTIL=none AR_DATE=none build_archive
+  arch_run
+  [[ "$(arch_state)" == "not-verified" ]]
+  [[ "$(arch_reason)" == *"Date"* ]]
+  AR_UNTIL=none AR_DATE="garbage" build_archive
+  arch_run
+  [[ "$(arch_state)" == "not-verified" ]]
+  [[ "$(arch_reason)" == *"Date"* ]]
 }
 
 @test "archive: unknown mirror host without --keyring -> not-verified with reason" {
@@ -1107,6 +1320,48 @@ arch_reason() { jq -r .archive_signature_detail.reason <<<"${output}"; }
   [[ "$(arch_reason)" == *"unknown archive host"* ]]
 }
 
+@test "archive: malformed suite from the target policy -> failed" {
+  sed -i 's#trixie/main amd64 Packages#Tri$xie/main amd64 Packages#' "${MOCKDIR}/resp_meta"
+  build_archive
+  arch_run
+  [[ "${status}" -eq 3 ]]
+  [[ "$(arch_state)" == "failed" ]]
+  [[ "$(arch_reason)" == *"malformed"* ]]
+  ! grep -q '/dists/' "${MOCKDIR}/curl.log"
+}
+
+# ---- match fails closed ----
+
+@test "archive: outside-verified match with a verified archive is match, exit 0" {
+  build_archive
+  arch_run --pve-host pve1 --ctid 123
+  assert_success
+  [[ "$(jq -r .verdict <<<"${output}")" == "match" ]]
+  [[ "$(jq -r .trust <<<"${output}")" == "outside-verified" ]]
+  [[ "$(arch_state)" == "verified" ]]
+}
+
+@test "archive: outside match with a not-verified archive is downgraded to match-unverified" {
+  echo 404 >"${MOCKDIR}/ir_code"
+  arch_run --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 4 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "match-unverified" ]]
+  [[ "$(jq -r .trust <<<"${output}")" == "outside-read-unsigned-package" ]]
+  [[ "$(jq -r .reason <<<"${output}")" == "archive signature not verified: "* ]]
+  [[ "$(jq -r .sha256_outside <<<"${output}")" == "${PKG_SHA}" ]]
+  arch_run --pve-host pve1 --ctid 123 --format md
+  assert_output --partial "trust: **outside-read-unsigned-package**"
+}
+
+@test "archive: --no-archive-check keeps a clean outside match as match" {
+  arch_run --pve-host pve1 --ctid 123 --no-archive-check
+  assert_success
+  [[ "$(jq -r .verdict <<<"${output}")" == "match" ]]
+  [[ "$(arch_reason)" == "disabled by --no-archive-check" ]]
+}
+
+# ---- precedence (centralized in finish) ----
+
 @test "archive: mismatch keeps precedence over a failed archive check" {
   write_ownership "$(sha_of tampered)"
   AR_STANZA_SHA="$(sha_of forged)" build_archive
@@ -1116,11 +1371,42 @@ arch_reason() { jq -r .archive_signature_detail.reason <<<"${output}"; }
   [[ "$(arch_state)" == "failed" ]]
 }
 
+@test "archive: failed check plus outside mismatch is still mismatch" {
+  write_outside "$(sha_of tampered)"
+  AR_STANZA_SHA="$(sha_of forged)" build_archive
+  arch_run --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 1 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "mismatch" ]]
+  [[ "$(arch_state)" == "failed" ]]
+}
+
+@test "archive: failed check plus missing member is error, not package-unknown" {
+  echo absent >"${MOCKDIR}/tar_mode"
+  AR_STANZA_SHA="$(sha_of forged)" build_archive
+  arch_run
+  [[ "${status}" -eq 3 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
+  [[ "$(jq -r .reason <<<"${output}")" == *"archive signature check failed"* ]]
+}
+
+@test "archive: failed check plus outside failure names both in the error reason" {
+  touch "${MOCKDIR}/ssh_fail_outside"
+  AR_STANZA_SHA="$(sha_of forged)" build_archive
+  arch_run --pve-host pve1 --ctid 123
+  [[ "${status}" -eq 3 ]]
+  [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
+  [[ "$(jq -r .reason <<<"${output}")" == *"outside view requested but unavailable"* ]]
+  [[ "$(jq -r .reason <<<"${output}")" == *"archive signature check failed"* ]]
+}
+
 @test "archive: failed check beats an otherwise clean outside-verified match" {
   AR_STANZA_SHA="$(sha_of forged)" build_archive
   arch_run --pve-host pve1 --ctid 123
   [[ "${status}" -eq 3 ]]
   [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
+  [[ "$(arch_state)" == "failed" ]]
+  [[ "$(arch_reason)" == *"possible tampering"* ]]
+  [[ "$(jq -r .reason <<<"${output}")" == *"possible tampering"* ]]
 }
 
 @test "archive: markdown shows the state and escapes the reason" {
@@ -1147,4 +1433,5 @@ arch_reason() { jq -r .archive_signature_detail.reason <<<"${output}"; }
   run "${TOOL}" --help
   assert_output --partial "--keyring"
   assert_output --partial "--no-archive-check"
+  assert_output --partial "--max-index-age-days"
 }

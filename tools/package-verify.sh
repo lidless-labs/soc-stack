@@ -10,7 +10,7 @@
 #   tools/package-verify.sh --host <ssh-target> --path </abs/file>
 #       [--pve-host <ssh-target> --ctid <id>] [--inside-via-pct]
 #       [--format json|md] [--mirror <url>] [--keyring <path>]
-#       [--no-archive-check]
+#       [--no-archive-check] [--max-index-age-days <1..365>]
 #
 # Exit codes: 0 match (outside-verified), 1 mismatch, 2 package-unknown,
 # 3 error/usage, 4 match-unverified (self-reported only).
@@ -57,7 +57,12 @@ Optional:
                         origins, both under /usr/share/keyrings, chosen from
                         the archive host; an unknown host needs --keyring).
   --no-archive-check    skip the archive signature check (archive_signature
-                        is then not-verified).
+                        is then not-verified, "disabled by --no-archive-check",
+                        and a match stays a match as in v1.3).
+  --max-index-age-days <n>
+                        newest acceptable age of the signed index Date, 1..365
+                        (default 14). An older or future-dated index is
+                        not-verified.
   --help                show this help
   --version             show the tool version
 
@@ -77,10 +82,15 @@ single-threaded (--threads-max=1) so the xz decoder fits under the cap.
 
 Verdicts and exit codes:
   match            0  outside (hypervisor) hash == inside hash == package
-                      file hash. Trust: outside-verified.
+                      file hash, and the archive signature check verified the
+                      .deb (or --no-archive-check was given). Trust:
+                      outside-verified.
   match-unverified 4  inside hash == package file hash but there is no
-                      independent outside view. Trust: self-reported, resting
-                      entirely on the target's honesty.
+                      independent outside view (trust: self-reported, resting
+                      entirely on the target's honesty), OR the outside view
+                      agrees but the archive signature is not verified (trust:
+                      outside-read-unsigned-package; the .deb is vouched for
+                      only by the target's apt metadata).
   mismatch         1  any of the compared hashes differ
   package-unknown  2  not owned by a package, diverted, version not in the
                       archive, or unsupported (third-party) origin
@@ -96,19 +106,24 @@ Verdicts and exit codes:
 
 Note: archive_signature is "verified" only when the runner itself checked the
 archive's GPG-signed InRelease (gpgv, at least one valid signature and no
-bad, expired or revoked one, the same rule apt uses), the index hash and size
+bad, expired or revoked one; stricter than apt, see below), the index hash and size
 from it, and found the .deb SHA256 and Filename in the signed index; a
-compromised target cannot forge that binding. "not-verified" means the check
-could not run or could not vouch for this version (no verdict change, for
-example the version was superseded in the current index). "failed" (verdict
-error, exit 3) means the signed data contradicts the target or the signature is
-bad; an already established mismatch still reports as mismatch. The outside
+compromised target cannot forge that binding. Unless --no-archive-check is
+given, a final "match" requires "verified"; any other archive state downgrades
+an outside-verified match to match-unverified (exit 4). "not-verified" means
+the check could not run or could not vouch for this version (for example the
+index is stale or the version was superseded). Compared with apt the policy is
+stricter: besides bad signatures it rejects any signature error other than a
+missing key, and it enforces a maximum signed-index age. "failed" (verdict
+error, exit 3) means the signed data contradicts the target, the signature is
+bad or the target supplied malformed suite data; an already established
+mismatch still reports as mismatch. The outside
 view stays the only independent evidence about the live file. A block-device
 read of a running container can lag the page cache.
 EOF
 }
 
-HOST="" FPATH="" PVE_HOST="" CTID="" FORMAT="json" MIRROR="" INSIDE_VIA_PCT=0 KEYRING="" ARCHIVE_ENABLED=1
+HOST="" FPATH="" PVE_HOST="" CTID="" FORMAT="json" MIRROR="" INSIDE_VIA_PCT=0 KEYRING="" ARCHIVE_ENABLED=1 MAX_INDEX_AGE_DAYS=14 DOWNGRADED=0
 
 # ---- state used for output ----
 RESOLVED="" DPKG_PATH="" INSIDE_SIZE="" MEMBER_SIZE="" PKG="" VERSION="" ARCH="" ORIGIN="" DEB_URL="" DEB_SHA="" DEB_META_MATCH="null"
@@ -160,6 +175,7 @@ while [[ $# -gt 0 ]]; do
     --mirror) [[ $# -ge 2 ]] || fail_usage "--mirror needs a value"; MIRROR="$2"; shift 2 ;;
     --keyring) [[ $# -ge 2 ]] || fail_usage "--keyring needs a value"; KEYRING="$2"; shift 2 ;;
     --no-archive-check) ARCHIVE_ENABLED=0; shift ;;
+    --max-index-age-days) [[ $# -ge 2 ]] || fail_usage "--max-index-age-days needs a value"; MAX_INDEX_AGE_DAYS="$2"; shift 2 ;;
     --help | -h) usage; exit 0 ;;
     --version) echo "package-verify ${TOOL_VERSION}"; exit 0 ;;
     *) fail_usage "unknown argument: $1" ;;
@@ -180,6 +196,8 @@ if [[ "$INSIDE_VIA_PCT" -eq 1 ]]; then
 else
   [[ -n "$HOST" ]] || fail_usage "--host is required"
 fi
+[[ "$MAX_INDEX_AGE_DAYS" =~ ^[0-9]{1,3}$ ]] && (( 10#$MAX_INDEX_AGE_DAYS >= 1 && 10#$MAX_INDEX_AGE_DAYS <= 365 )) || fail_usage "--max-index-age-days must be an integer from 1 to 365"
+MAX_INDEX_AGE_DAYS=$((10#$MAX_INDEX_AGE_DAYS))
 if [[ -n "$KEYRING" ]]; then valid_path "$KEYRING" || fail_usage "--keyring must be an absolute path (characters A-Z a-z 0-9 . _ + / -)"; fi
 if [[ -n "$MIRROR" ]]; then valid_mirror "$MIRROR" || fail_usage "--mirror must be an https URL"; MIRROR="${MIRROR%/}"; fi
 [[ "$PV_DECODER_TIMEOUT" =~ ^[0-9]{1,7}$ && "$PV_DECODER_VMEM_KB" =~ ^[0-9]{1,9}$ ]] || fail_usage "PV_DECODER_TIMEOUT and PV_DECODER_VMEM_KB must be decimal digits"
@@ -257,7 +275,7 @@ emit_json() {
       verdict: $verdict,
       trust: $trust,
       reason: ($reason | nn),
-      trust_note: "outside-verified means an independent hypervisor read of the caller-supplied path agrees with the package file. self-reported means every fact came from the target itself and rests entirely on the target honesty.",
+      trust_note: "outside-verified means an independent hypervisor read of the caller-supplied path agrees with the package file. self-reported means every fact came from the target itself and rests entirely on the target honesty. outside-read-unsigned-package means the outside read agrees with the package file but the archive signature was not verified, so the .deb rests on the target apt metadata.",
       archive_signature: $arch_state,
       archive_signature_detail: {
         suite: ($arch_suite | nn),
@@ -317,17 +335,28 @@ emit_md() {
 | sha256 outside | ${outside} |
 | Checked (UTC) | $(date -u +%Y-%m-%dT%H:%M:%SZ) |
 
-Trust: outside-verified means an independent hypervisor read of the caller-supplied path agrees with the package file; self-reported rests entirely on the target's honesty. Archive signature: $(md_esc "$ARCHIVE_STATE") ($(md_esc "$ARCHIVE_REASON" 300)$([[ -n "$ARCHIVE_FPRS" ]] && printf '; signer %s' "$(md_esc "$ARCHIVE_FPRS" 200)")). $(md_esc "$(archive_note)" 400) A block-device read of a running container can lag the page cache.
+Trust: outside-verified means an independent hypervisor read of the caller-supplied path agrees with the package file; self-reported rests entirely on the target's honesty; outside-read-unsigned-package means the outside read agrees with the package file but the .deb is vouched for only by the target's apt metadata. Archive signature: $(md_esc "$ARCHIVE_STATE") ($(md_esc "$ARCHIVE_REASON" 300)$([[ -n "$ARCHIVE_FPRS" ]] && printf '; signer %s' "$(md_esc "$ARCHIVE_FPRS" 200)")). $(md_esc "$(archive_note)" 400) A block-device read of a running container can lag the page cache.
 EOF
 }
 
 trust_level() {
-  if [[ -n "$SHA_OUTSIDE" ]]; then echo "outside-verified"; else echo "self-reported"; fi
+  if [[ "$DOWNGRADED" -eq 1 ]]; then echo "outside-read-unsigned-package"
+  elif [[ -n "$SHA_OUTSIDE" ]]; then echo "outside-verified"; else echo "self-reported"; fi
 }
 
 finish() {
   VERDICT="$1"
   REASON="${2:-}"
+  # Precedence: mismatch always wins. Otherwise a failed archive check makes the
+  # verdict error, and an error that is already being reported also names it.
+  if [[ "$ARCHIVE_STATE" == "failed" && "$VERDICT" != "mismatch" ]]; then
+    if [[ "$VERDICT" == "error" ]]; then
+      REASON="${REASON:+${REASON}; }archive signature check failed: ${ARCHIVE_REASON}"
+    else
+      REASON="archive signature check failed: ${ARCHIVE_REASON} (the result would otherwise be ${VERDICT})"
+      VERDICT="error"
+    fi
+  fi
   if [[ "$FORMAT" == "md" ]]; then emit_md; else emit_json; fi
   case "$VERDICT" in
     match) exit 0 ;;
@@ -615,7 +644,7 @@ archive_check() {
   local got_size got_hash stanza_out sf ss decomp ext r1 r2 r3
 
   if [[ "$ARCHIVE_ENABLED" -eq 0 ]]; then
-    arch_done not-verified "archive check disabled with --no-archive-check"; return 0
+    arch_done not-verified "disabled by --no-archive-check"; return 0
   fi
   if [[ "$USED_SNAPSHOT" -eq 1 ]]; then
     arch_done not-verified "the .deb came from snapshot.debian.org (version rotated out of the current archive index), so the current signed index cannot vouch for it"; return 0
@@ -629,7 +658,7 @@ archive_check() {
     arch_done not-verified "the target's apt policy did not report suite, component and architecture for ${PKG}"; return 0
   fi
   if [[ ! "$suite" =~ ^[a-z0-9][a-z0-9.-]*$ || ! "$comp" =~ ^[a-z0-9][a-z0-9-]*$ || ! "$idx_arch" =~ ^[a-z0-9-]+$ ]]; then
-    arch_done not-verified "suite, component or architecture from the target has unexpected characters; not used in a URL"; return 0
+    arch_done failed "suite, component or architecture from the target's apt policy is malformed; refusing to use target-controlled data in a URL"; return 0
   fi
   ARCHIVE_SUITE="$suite"; ARCHIVE_COMPONENT="$comp"
 
@@ -637,9 +666,9 @@ archive_check() {
   if [[ -z "$kr" ]]; then
     host="${MIRROR#https://}"; host="${host%%[/:]*}"
     if [[ "$host" =~ ^(deb|ftp|security|ftp\.[a-z]{2})\.debian\.org$ ]]; then
-      kr="/usr/share/keyrings/debian-archive-keyring.gpg"
+      kr="${PV_DEBIAN_KEYRING:-/usr/share/keyrings/debian-archive-keyring.gpg}"
     elif [[ "$host" =~ ^(([a-z]{2}\.)?archive|security)\.ubuntu\.com$ ]]; then
-      kr="/usr/share/keyrings/ubuntu-archive-keyring.gpg"
+      kr="${PV_UBUNTU_KEYRING:-/usr/share/keyrings/ubuntu-archive-keyring.gpg}"
     else
       arch_done not-verified "unknown archive host for ${MIRROR}; pass --keyring to choose the trusted keyring"; return 0
     fi
@@ -655,13 +684,23 @@ archive_check() {
   gpgv_dir="${WORK}/gnupg"; mkdir -m 700 "$gpgv_dir" 2>/dev/null || { arch_done not-verified "could not create a private gpgv home"; return 0; }
   status_file="${WORK}/gpgv.status"; plain="${WORK}/InRelease.plain"
   : >"$status_file"
-  # Exit codes and human text are not parsed; only the machine status lines.
-  ( decoder gpgv --homedir "$gpgv_dir" --keyring "$kr" --status-fd 3 --output "$plain" "$ir_file" ) 3>"$status_file" >/dev/null 2>&1 || true
+  # Human text is not parsed; only the machine status lines plus the exit
+  # status. gpgv exits 2 when a signature is good but another one cannot be
+  # checked (for example Debian signs with several keys and an older keyring
+  # knows one), so 0 and 2 are both usable; anything else (a timeout is 124,
+  # a kill is 137, a crash is above 128) is not.
+  local gpgv_rc=0 nodata=0 errsig_other=0 errsig_nokey=0 f2
+  ( decoder gpgv --homedir "$gpgv_dir" --keyring "$kr" --status-fd 3 --output "$plain" "$ir_file" ) 3>"$status_file" >/dev/null 2>&1 || gpgv_rc=$?
   while IFS= read -r line; do
     case "$line" in
       "[GNUPG:] BADSIG "* | "[GNUPG:] EXPKEYSIG "* | "[GNUPG:] REVKEYSIG "* | "[GNUPG:] EXPSIG "*)
         bad=1; st="${line#\[GNUPG:\] }"; st="${st%% *}"
         ARCHIVE_BAD_STATUS="${ARCHIVE_BAD_STATUS:-$st}" ;;
+      "[GNUPG:] ERRSIG "*)
+        read -r -a f2 <<<"$line"
+        # ERRSIG <keyid> <pkalgo> <hashalgo> <class> <time> <rc> <fpr>; rc 9 is a missing key
+        if [[ "${f2[7]:-}" == "9" ]]; then errsig_nokey=$((errsig_nokey + 1)); else errsig_other=$((errsig_other + 1)); fi ;;
+      "[GNUPG:] NODATA "* | "[GNUPG:] FAILURE "*) nodata=1 ;;
       "[GNUPG:] VALIDSIG "*)
         # fields: [GNUPG:] VALIDSIG <fpr> ... <sig-class> <primary-fpr>
         local -a f; read -r -a f <<<"$line"
@@ -674,8 +713,17 @@ archive_check() {
   if [[ "$bad" -eq 1 ]]; then
     arch_done failed "InRelease signature check reported ${ARCHIVE_BAD_STATUS} for ${suite}; the signed index is not trustworthy"; return 0
   fi
+  if [[ "$gpgv_rc" != "0" && "$gpgv_rc" != "2" ]]; then
+    arch_done not-verified "gpgv exited with status ${gpgv_rc} (killed, timed out or failed); cannot rely on the signature result"; return 0
+  fi
+  if [[ "$nodata" -eq 1 ]]; then
+    arch_done not-verified "gpgv reported NODATA or FAILURE for the InRelease of ${suite}"; return 0
+  fi
+  if [[ "$errsig_other" -gt 0 ]]; then
+    arch_done not-verified "gpgv reported a signature error other than a missing key for the InRelease of ${suite}"; return 0
+  fi
   if [[ "$valid" -eq 0 || ! -s "$plain" ]]; then
-    arch_done failed "InRelease for ${suite} has no valid signature from the trusted keyring (no VALIDSIG)"; return 0
+    arch_done not-verified "no signature from a key in ${kr}; the keyring may be stale"; return 0
   fi
   ARCHIVE_FPRS="$fprs"
 
@@ -688,6 +736,21 @@ archive_check() {
     if (( until_ts < $(date -u +%s) )); then
       arch_done failed "InRelease for ${suite} expired (Valid-Until ${until_raw:0:40}); a stale signed index can hide a replaced package"; return 0
     fi
+  fi
+  # Debian main InRelease carries no Valid-Until, so freshness comes from the
+  # signed Date field: not older than --max-index-age-days, not in the future.
+  local date_raw date_ts now_ts
+  date_raw="$(sed -n 's/^Date: *//p' "$plain" | head -n 1)"
+  date_ts="$(LC_ALL=C date -u -d "$date_raw" +%s 2>/dev/null)" || date_ts=""
+  if [[ -z "$date_raw" || ! "$date_ts" =~ ^[0-9]+$ ]]; then
+    arch_done not-verified "signed InRelease has a missing or unparseable Date; cannot judge freshness"; return 0
+  fi
+  now_ts="$(date -u +%s)"
+  if (( date_ts > now_ts + 86400 )); then
+    arch_done not-verified "runner clock or index date is wrong (signed Date is more than 1 day in the future)"; return 0
+  fi
+  if (( now_ts - date_ts > MAX_INDEX_AGE_DAYS * 86400 )); then
+    arch_done not-verified "signed index is older than ${MAX_INDEX_AGE_DAYS} days"; return 0
   fi
   by_hash=0
   grep -qx 'Acquire-By-Hash: yes' "$plain" && by_hash=1
@@ -725,7 +788,12 @@ archive_check() {
   got_size="$(wc -c <"$idx_file" | tr -d ' ')"
   got_hash="$(sha256sum -- "$idx_file" | cut -d' ' -f1)"
   if [[ "$got_size" != "$size" || "$got_hash" != "$hash" ]]; then
-    arch_done failed "downloaded ${ARCHIVE_INDEX} does not match the size and SHA256 in the signed InRelease; possible tampering"; return 0
+    if [[ "$by_hash" -eq 1 ]]; then
+      arch_done failed "downloaded ${ARCHIVE_INDEX} (fetched by hash) does not match the size and SHA256 in the signed InRelease; possible tampering"
+    else
+      arch_done not-verified "index changed during fetch (mirror mid-sync) or was altered: ${ARCHIVE_INDEX} does not match the signed size and SHA256"
+    fi
+    return 0
   fi
 
   # Stream-parse the index for the exact package/version/architecture stanza.
@@ -754,7 +822,9 @@ archive_check() {
   stanza_out="${stanza_out%@@rc *}"
   stanza_out="${stanza_out%$'\n'}"
   read -r r1 r2 r3 <<<"$rc_all"
-  # r1/r2 may be 141 (SIGPIPE) only when awk stopped early after two matches.
+  # The decompressor (r1) and cut (r2) may die of SIGPIPE (141) when awk exits
+  # early after two matching stanzas; any other non-zero status from them, and
+  # any non-zero awk status (r3), means the parse is not trusted.
   if [[ "$r3" != "0" ]] || { [[ "$r1" != "0" && "$r1" != "141" ]] || [[ "$r2" != "0" && "$r2" != "141" ]]; }; then
     arch_done not-verified "could not parse ${ARCHIVE_INDEX} (decoder failed or timed out)"; return 0
   fi
@@ -954,16 +1024,19 @@ fi
 if [[ -n "$SHA_OUTSIDE" && "$SHA_OUTSIDE" != "$SHA_EXTRACTED" ]]; then
   finish mismatch "outside read differs from the package file"
 fi
-# Every mismatch check above takes precedence over a failed archive check; the
-# archive failure comes next so it is not hidden by a plain consistency error.
-if [[ "$ARCHIVE_STATE" == "failed" ]]; then
-  finish error "archive signature check failed: ${ARCHIVE_REASON}"
-fi
+# A failed archive check is applied centrally in finish(): it turns any verdict
+# except mismatch into error, and it is named in an existing error's reason.
 if [[ -n "$SHA_OUTSIDE" && "$OUTSIDE_SIZE" != "$MEMBER_SIZE" ]]; then
   SHA_OUTSIDE=""
   finish error "outside size (${OUTSIDE_SIZE}) differs from the package file size (${MEMBER_SIZE}) although the hashes agree; the read is inconsistent"
 fi
 if [[ -n "$SHA_OUTSIDE" ]]; then
+  # A match (exit 0) needs the archive to have vouched for the .deb, unless the
+  # caller opted out with --no-archive-check (v1.3 behavior).
+  if [[ "$ARCHIVE_ENABLED" -eq 1 && "$ARCHIVE_STATE" != "verified" ]]; then
+    DOWNGRADED=1
+    finish match-unverified "archive signature not verified: ${ARCHIVE_REASON}; the outside read agrees with the package file but the .deb is vouched for only by the target's apt metadata"
+  fi
   finish match ""
 fi
 finish match-unverified "no independent outside view: ${OUTSIDE_REASON}; the result is self-reported by the target"
