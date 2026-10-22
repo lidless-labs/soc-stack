@@ -137,7 +137,7 @@ the canonical path (`package-unknown`).
    InRelease. Freshness: a past `Valid-Until` or an unparseable one is `failed`. Debian main
    InRelease carries no `Valid-Until`, so it is not required; instead the
    signed `Date` must be parseable, not older than `--max-index-age-days`
-   (default 14, 1 to 365) and not more than one day in the future, else
+   (default 120, 1 to 365) and not more than one day in the future, else
    `not-verified`. The SHA-256 and size of
    `<component>/binary-<arch>/Packages.xz` (or `.gz`) are taken from the signed
    text; the index is fetched (from `by-hash/SHA256/<hash>` when the release
@@ -220,10 +220,13 @@ characters and Markdown-escaped before it is rendered.
 - Debian stable and oldstable main `InRelease` files are re-signed only at point
   releases, so their `Date` can be weeks or months old (trixie main was dated
   2026-09-12 when checked in late October) while `-security` and `-updates` are
-  refreshed daily. With the default 14-day window a stable main package is
-  `not-verified` (and a clean outside match is downgraded) until you widen
-  `--max-index-age-days`, for example 90. The choice trades replay resistance
-  for coverage.
+  refreshed daily. The default `--max-index-age-days` is therefore 120. A
+  replayed older signed index can only vouch for an older genuine package, so
+  the residual risk is narrow, and suites that carry `Valid-Until` are still
+  governed by it. If two point releases are ever more than 120 days apart, stable
+  main packages become `not-verified` (and a clean outside match is downgraded
+  to `match-unverified`) until the next point release, unless you pass a larger
+  value.
 - `failed` (verdict `error`) covers a bad, expired-key or revoked-key
   signature, no valid signature at all, an expired `Valid-Until`, an index whose
   size or hash differs from the signed text, and a signed stanza that

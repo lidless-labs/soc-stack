@@ -61,7 +61,7 @@ Optional:
                         and a match stays a match as in v1.3).
   --max-index-age-days <n>
                         newest acceptable age of the signed index Date, 1..365
-                        (default 14). An older or future-dated index is
+                        (default 120). An older or future-dated index is
                         not-verified.
   --help                show this help
   --version             show the tool version
@@ -123,7 +123,7 @@ read of a running container can lag the page cache.
 EOF
 }
 
-HOST="" FPATH="" PVE_HOST="" CTID="" FORMAT="json" MIRROR="" INSIDE_VIA_PCT=0 KEYRING="" ARCHIVE_ENABLED=1 MAX_INDEX_AGE_DAYS=14 DOWNGRADED=0
+HOST="" FPATH="" PVE_HOST="" CTID="" FORMAT="json" MIRROR="" INSIDE_VIA_PCT=0 KEYRING="" ARCHIVE_ENABLED=1 MAX_INDEX_AGE_DAYS=120 DOWNGRADED=0
 
 # ---- state used for output ----
 RESOLVED="" DPKG_PATH="" INSIDE_SIZE="" MEMBER_SIZE="" PKG="" VERSION="" ARCH="" ORIGIN="" DEB_URL="" DEB_SHA="" DEB_META_MATCH="null"
