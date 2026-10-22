@@ -60,9 +60,14 @@ Optional:
                         is then not-verified, "disabled by --no-archive-check",
                         and a match stays a match as in v1.3).
   --max-index-age-days <n>
-                        newest acceptable age of the signed index Date, 1..365
-                        (default 120). An older or future-dated index is
-                        not-verified.
+                        oldest acceptable age of the signed index Date, 0..3650
+                        days. Default 0 means the age check is off, because
+                        frozen release pockets (for example Ubuntu noble or
+                        Debian bullseye) are never re-signed and carry no
+                        Valid-Until. A value above 0 makes an older index
+                        not-verified. A Date more than 1 day in the future is
+                        always not-verified, and Valid-Until is always
+                        enforced (expired or unparseable is failed).
   --help                show this help
   --version             show the tool version
 
@@ -123,7 +128,7 @@ read of a running container can lag the page cache.
 EOF
 }
 
-HOST="" FPATH="" PVE_HOST="" CTID="" FORMAT="json" MIRROR="" INSIDE_VIA_PCT=0 KEYRING="" ARCHIVE_ENABLED=1 MAX_INDEX_AGE_DAYS=120 DOWNGRADED=0
+HOST="" FPATH="" PVE_HOST="" CTID="" FORMAT="json" MIRROR="" INSIDE_VIA_PCT=0 KEYRING="" ARCHIVE_ENABLED=1 MAX_INDEX_AGE_DAYS=0 DOWNGRADED=0
 
 # ---- state used for output ----
 RESOLVED="" DPKG_PATH="" INSIDE_SIZE="" MEMBER_SIZE="" PKG="" VERSION="" ARCH="" ORIGIN="" DEB_URL="" DEB_SHA="" DEB_META_MATCH="null"
@@ -196,7 +201,7 @@ if [[ "$INSIDE_VIA_PCT" -eq 1 ]]; then
 else
   [[ -n "$HOST" ]] || fail_usage "--host is required"
 fi
-[[ "$MAX_INDEX_AGE_DAYS" =~ ^[0-9]{1,3}$ ]] && (( 10#$MAX_INDEX_AGE_DAYS >= 1 && 10#$MAX_INDEX_AGE_DAYS <= 365 )) || fail_usage "--max-index-age-days must be an integer from 1 to 365"
+[[ "$MAX_INDEX_AGE_DAYS" =~ ^[0-9]{1,4}$ ]] && (( 10#$MAX_INDEX_AGE_DAYS <= 3650 )) || fail_usage "--max-index-age-days must be an integer from 0 to 3650"
 MAX_INDEX_AGE_DAYS=$((10#$MAX_INDEX_AGE_DAYS))
 if [[ -n "$KEYRING" ]]; then valid_path "$KEYRING" || fail_usage "--keyring must be an absolute path (characters A-Z a-z 0-9 . _ + / -)"; fi
 if [[ -n "$MIRROR" ]]; then valid_mirror "$MIRROR" || fail_usage "--mirror must be an https URL"; MIRROR="${MIRROR%/}"; fi
@@ -355,6 +360,7 @@ finish() {
     else
       REASON="archive signature check failed: ${ARCHIVE_REASON} (the result would otherwise be ${VERDICT})"
       VERDICT="error"
+      DOWNGRADED=0 # an error reports the trust level its own path would
     fi
   fi
   if [[ "$FORMAT" == "md" ]]; then emit_md; else emit_json; fi
@@ -725,6 +731,9 @@ archive_check() {
   if [[ "$valid" -eq 0 || ! -s "$plain" ]]; then
     arch_done not-verified "no signature from a key in ${kr}; the keyring may be stale"; return 0
   fi
+  if [[ "$gpgv_rc" == "2" && "$errsig_nokey" -eq 0 ]]; then
+    arch_done not-verified "gpgv exited with status 2 without a missing-key signature to explain it; cannot rely on the signature result"; return 0
+  fi
   ARCHIVE_FPRS="$fprs"
 
   until_raw="$(sed -n 's/^Valid-Until: *//p' "$plain" | head -n 1)"
@@ -737,8 +746,9 @@ archive_check() {
       arch_done failed "InRelease for ${suite} expired (Valid-Until ${until_raw:0:40}); a stale signed index can hide a replaced package"; return 0
     fi
   fi
-  # Debian main InRelease carries no Valid-Until, so freshness comes from the
-  # signed Date field: not older than --max-index-age-days, not in the future.
+  # Frozen release pockets carry no Valid-Until and are never re-signed, so the
+  # Date age check is opt-in (--max-index-age-days > 0). A Date in the future is
+  # always rejected.
   local date_raw date_ts now_ts
   date_raw="$(sed -n 's/^Date: *//p' "$plain" | head -n 1)"
   date_ts="$(LC_ALL=C date -u -d "$date_raw" +%s 2>/dev/null)" || date_ts=""
@@ -749,7 +759,7 @@ archive_check() {
   if (( date_ts > now_ts + 86400 )); then
     arch_done not-verified "runner clock or index date is wrong (signed Date is more than 1 day in the future)"; return 0
   fi
-  if (( now_ts - date_ts > MAX_INDEX_AGE_DAYS * 86400 )); then
+  if (( MAX_INDEX_AGE_DAYS > 0 && now_ts - date_ts > MAX_INDEX_AGE_DAYS * 86400 )); then
     arch_done not-verified "signed index is older than ${MAX_INDEX_AGE_DAYS} days"; return 0
   fi
   by_hash=0

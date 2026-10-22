@@ -913,8 +913,8 @@ teardown_file() {
   gpgconf --homedir "${GPGDIR_B}" --kill all >/dev/null 2>&1 || true
 }
 
-days_ago() { date -u -d "$1 days ago" '+%a, %d %b %Y %H:%M:%S UTC'; }
-days_ahead() { date -u -d "$1 days" '+%a, %d %b %Y %H:%M:%S UTC'; }
+days_ago() { LC_ALL=C date -u -d "$1 days ago" '+%a, %d %b %Y %H:%M:%S UTC'; }
+days_ahead() { LC_ALL=C date -u -d "$1 days" '+%a, %d %b %Y %H:%M:%S UTC'; }
 
 # build_archive: write the index payload and a clearsigned MOCKDIR/InRelease.
 # Knobs (env): AR_PKG (passwd), AR_STANZA_SHA (the .deb sha), AR_FILENAME,
@@ -926,7 +926,7 @@ build_archive() {
   local pkg="${AR_PKG:-passwd}" sha="${AR_STANZA_SHA:-${DEB_SHA}}"
   local fn="${AR_FILENAME:-pool/main/s/shadow/passwd_4.17.4-2_amd64.deb}"
   local until="${AR_UNTIL:-Mon, 01 Jan 2057 00:00:00 UTC}" signers="${AR_SIGNERS:-A}"
-  local adate="${AR_DATE:-$(date -u '+%a, %d %b %Y %H:%M:%S UTC')}" sarch="${AR_STANZA_ARCH:-amd64}"
+  local adate="${AR_DATE:-$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S UTC')}" sarch="${AR_STANZA_ARCH:-amd64}"
   local stanza
   stanza="$(printf 'Package: %s\nVersion: 1:4.17.4-2\nArchitecture: %s\nFilename: %s\nSHA256: %s\nDescription: y\n\n' "${pkg}" "${sarch}" "${fn}" "${sha}")"
   {
@@ -1100,10 +1100,10 @@ arch_reason() { jq -r .archive_signature_detail.reason <<<"${output}"; }
   [[ "$(arch_reason)" == *"BADSIG"* ]]
 }
 
-@test "archive: EXPKEYSIG and REVKEYSIG next to a valid signature -> failed" {
+@test "archive: EXPKEYSIG, REVKEYSIG and EXPSIG next to a valid signature -> failed" {
   build_archive
   local st
-  for st in EXPKEYSIG REVKEYSIG; do
+  for st in EXPKEYSIG REVKEYSIG EXPSIG; do
     mock_gpgv 1 "${VALID_LINE}" "[GNUPG:] ${st} 6ED0E7B82643E131 Test Key"
     arch_run
     [[ "${status}" -eq 3 ]]
@@ -1125,6 +1125,21 @@ arch_reason() { jq -r .archive_signature_detail.reason <<<"${output}"; }
   mock_gpgv 2 "${VALID_LINE}" '[GNUPG:] ERRSIG 78DBA3BC47EF2265 1 8 01 1789199779 9 B8E5F13B' '[GNUPG:] NO_PUBKEY 78DBA3BC47EF2265'
   arch_run
   [[ "$(arch_state)" == "verified" ]]
+}
+
+@test "archive: gpgv exit 2 without any missing-key signature -> not-verified" {
+  build_archive
+  mock_gpgv 2 "${VALID_LINE}"
+  arch_run
+  [[ "$(arch_state)" == "not-verified" ]]
+  [[ "$(arch_reason)" == *"exited with status 2"* ]]
+}
+
+@test "archive: a failed check ending as error does not report the unsigned-package trust" {
+  AR_STANZA_SHA="$(sha_of forged)" build_archive
+  arch_run --pve-host pve1 --ctid 123
+  [[ "$(jq -r .verdict <<<"${output}")" == "error" ]]
+  [[ "$(jq -r .trust <<<"${output}")" == "outside-verified" ]]
 }
 
 @test "archive: NODATA or FAILURE status -> not-verified" {
@@ -1267,18 +1282,19 @@ arch_reason() { jq -r .archive_signature_detail.reason <<<"${output}"; }
   [[ "$(arch_state)" == "verified" ]]
 }
 
-@test "archive: signed Date older than the default 120 days -> not-verified" {
+@test "archive: a 2-year-old Date on a frozen noble-style suite verifies by default" {
+  sed -i 's#500 http://deb.debian.org/debian trixie/main#500 http://archive.ubuntu.com/ubuntu noble/main#' "${MOCKDIR}/resp_meta"
+  AR_UNTIL=none AR_DATE="$(days_ago 730)" build_archive
+  PV_UBUNTU_KEYRING="${BATS_FILE_TMPDIR}/keyA.gpg" run "${TOOL}" --host target1 --path /usr/bin/chsh
+  [[ "$(arch_state)" == "verified" ]]
+}
+
+@test "archive: explicit --max-index-age-days 120 rejects a 150-day-old Date" {
   AR_UNTIL=none AR_DATE="$(days_ago 150)" build_archive
-  arch_run
+  arch_run --max-index-age-days 120
   [[ "${status}" -eq 4 ]]
   [[ "$(arch_state)" == "not-verified" ]]
   [[ "$(arch_reason)" == "signed index is older than 120 days" ]]
-}
-
-@test "archive: a Date 100 days old is accepted by the default window" {
-  AR_UNTIL=none AR_DATE="$(days_ago 100)" build_archive
-  arch_run
-  [[ "$(arch_state)" == "verified" ]]
 }
 
 @test "archive: --max-index-age-days widens or narrows the window" {
@@ -1290,9 +1306,14 @@ arch_reason() { jq -r .archive_signature_detail.reason <<<"${output}"; }
   [[ "$(arch_reason)" == "signed index is older than 7 days" ]]
 }
 
-@test "archive: --max-index-age-days must be an integer from 1 to 365" {
+@test "archive: --max-index-age-days accepts 0 to 3650 and rejects the rest" {
   local v
-  for v in 0 366 abc 1.5 -1 ""; do
+  build_archive
+  for v in 0 3650; do
+    arch_run --max-index-age-days "${v}"
+    [[ "${status}" -eq 4 ]]
+  done
+  for v in 3651 abc 1.5 -1 ""; do
     run "${TOOL}" --host t --path /usr/bin/chsh --max-index-age-days "${v}"
     [[ "${status}" -eq 3 ]]
   done
