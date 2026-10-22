@@ -136,8 +136,8 @@ the canonical path (`package-unknown`).
    Only the plaintext that gpgv writes is read afterwards, never the raw
    InRelease. Freshness: a past `Valid-Until` or an unparseable one is `failed`. Debian main
    InRelease carries no `Valid-Until`, so it is not required; instead the
-   signed `Date` must be parseable, not older than `--max-index-age-days`
-   (default 120, 1 to 365) and not more than one day in the future, else
+   signed `Date` must be parseable, not older than `--max-index-age-days` when that is above 0
+   (default 0 = off, up to 3650) and not more than one day in the future, else
    `not-verified`. The SHA-256 and size of
    `<component>/binary-<arch>/Packages.xz` (or `.gz`) are taken from the signed
    text; the index is fetched (from `by-hash/SHA256/<hash>` when the release
@@ -209,7 +209,7 @@ characters and Markdown-escaped before it is rendered.
   cannot forge the binding between the .deb and its checksum. It says nothing
   about the live file; only the outside view does.
 - `not-verified` covers (it does not change the verdict by itself, but it
-  blocks a final `match`, see above): `--no-archive-check`, no `gpgv`, a stale or future-dated signed index,
+  blocks a final `match`, see above): `--no-archive-check`, no `gpgv`, a future-dated signed index (or one older than a requested `--max-index-age-days`),
   a signature only by keys missing from the keyring, gpgv errors,
   `xz`/`gzip` or keyring on the runner, an unknown archive host without
   `--keyring`, a .deb fetched from `snapshot.debian.org`, a package version
@@ -217,18 +217,24 @@ characters and Markdown-escaped before it is rendered.
   a network failure or non-200 on InRelease or the index. In those cases the
   .deb is bound only to the SHA256 the target reports from its apt lists, which
   a compromised target can forge.
-- Debian stable and oldstable main `InRelease` files are re-signed only at point
-  releases, so their `Date` can be weeks or months old (trixie main was dated
-  2026-09-12 when checked in late October) while `-security` and `-updates` are
-  refreshed daily. The default `--max-index-age-days` is therefore 120. A
-  replayed older signed index can only vouch for an older genuine package, so
-  the residual risk is narrow, and suites that carry `Valid-Until` are still
-  governed by it. If two point releases are ever more than 120 days apart, stable
-  main packages become `not-verified` (and a clean outside match is downgraded
-  to `match-unverified`) until the next point release, unless you pass a larger
-  value.
+- Frozen release pockets are never re-signed and carry no `Valid-Until`: Ubuntu
+  noble was signed 2024-04-25 and jammy 2022-04-21, Debian bullseye 2025-08-09,
+  and Debian stable main only changes at point releases (trixie main was dated
+  2026-09-12 when checked in late October). A freshness limit would leave all of
+  them `not-verified`, so the signed-`Date` age check is opt-in:
+  `--max-index-age-days` defaults to 0 (off) and accepts 0 to 3650. Replaying
+  an old signed index can only vouch for an older genuine package, and the
+  index and the .deb are fetched over https from official archive hosts only.
+  Suites that set `Valid-Until` (such as security) stay protected because an
+  expired or unparseable `Valid-Until` is always `failed`. A signed `Date` more
+  than one day in the future is always `not-verified`. Pass for example
+  `--max-index-age-days 120` to also reject indexes older than that.
+- A valid signature and a gpgv exit status of 2 are accepted together only when
+  at least one signature was skipped for a missing key (`ERRSIG` reason 9);
+  any other exit status 2 is `not-verified`. No valid signature at all is
+  `not-verified` as well.
 - `failed` (verdict `error`) covers a bad, expired-key or revoked-key
-  signature, no valid signature at all, an expired `Valid-Until`, an index whose
+  signature, an expired `Valid-Until`, an index whose
   size or hash differs from the signed text, and a signed stanza that
   disagrees with the target's apt `SHA256` or `Filename`.
 - The default Debian keyring package on the runner can lag the archive: the
