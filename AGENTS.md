@@ -41,5 +41,19 @@ Report actual command output, not expectations. If anything fails, quote the fai
 - Capturing test output: `tests/unit/run.sh` switches the bats formatter to `tap` when stdout is not a TTY. Do not "fix" missing pretty output; the pretty formatter breaks under log capture.
 - Validating installer behavior without a live host: unit tests use mocked Proxmox binaries; `--dry-run` is the only safe end-to-end check. There is no way to fully exercise deploy logic without a Proxmox host, so say so rather than pretending coverage exists.
 
+## GitHub agent attribution
+
+Every issue body, pull request body, and GitHub comment an agent writes or edits on Solomon's behalf in this repository ends with this block. Keep the human author identity. Use the actual model, harness, and client. Credit only work performed, include the provider if a model name is ambiguous, and list each review pass. Report the exact checks and observed results above the block. Credit verification to the model that ran the checks.
+
+```text
+Sent on behalf of Solomon by <orchestrator model> via <harness> in <client>
+Models used:
+- Implementation/build: <model> via <harness>, or none
+- Test/verification: <model> via <harness> (checks: listed above), or not run
+- Review: <model> via <harness> for each pass, or none
+```
+
+Every agent-written review comment and review summary on Solomon's behalf also includes `Review by <model> via <harness> in <client>`.
+
 ## Memory Handoff
 At the end of any substantial task, write a handoff note to `.claude/memory-handoffs/` using that directory's `TEMPLATE.md`. Record durable discoveries, gotchas, and decisions. Do not wait to be reminded.
