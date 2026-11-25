@@ -119,3 +119,83 @@ lxc_wait_network() {
 lxc_ip() {
   pct exec "$1" -- hostname -I 2>/dev/null | awk '{print $1}'
 }
+
+# _pick_ubuntu_from_list <storage>
+# Prints the newest supported Ubuntu 22.04 standard template volume already
+# present on <storage>, or returns non-zero when none is present.
+_pick_ubuntu_from_list() {
+  local storage="$1"
+  local candidates newest
+  candidates="$(pveam list "${storage}" 2>/dev/null \
+    | grep -oE '[^[:space:]]*ubuntu-22\.04-standard_[^[:space:]]+\.tar\.zst' \
+    | sort -uV)" || return 1
+  newest="$(tail -n 1 <<< "${candidates}")"
+  if [[ -n "${newest}" ]]; then
+    printf '%s\n' "${newest}"
+    return 0
+  fi
+  return 1
+}
+
+# Resolved templates per storage target (cache so deploy_one does not redo
+# index refresh/download for every component).
+declare -gA SOC_TEMPLATE_CACHE=()
+
+# ensure_ubuntu_template <storage>
+# Resolves a usable Ubuntu container template for <storage>.
+# Order: already-present local template -> pveam update -> pick a supported
+# Ubuntu 22.04 template from `pveam available` -> download ->
+# verify it exists. Fails with a clear error instead of ever returning a
+# nonexistent template path (issue #7). Prints the volume path on success.
+ensure_ubuntu_template() {
+  local storage="$1"
+  local found archive avail
+
+  if [[ -n "${SOC_TEMPLATE_CACHE[${storage}]:-}" ]]; then
+    printf '%s\n' "${SOC_TEMPLATE_CACHE[${storage}]}"
+    return 0
+  fi
+
+  found="$(_pick_ubuntu_from_list "${storage}")" || found=""
+  if [[ -z "${found}" ]] && [[ "${storage}" != "local" ]]; then
+    found="$(_pick_ubuntu_from_list local)" || found=""
+  fi
+  if [[ -n "${found}" ]]; then
+    msg_info "using existing Ubuntu template ${found}"
+    SOC_TEMPLATE_CACHE["${storage}"]="${found}"
+    printf '%s\n' "${found}"
+    return 0
+  fi
+
+  msg_info "no Ubuntu container template present; refreshing appliance index"
+  if ! pveam update >/dev/null 2>&1; then
+    msg_error "'pveam update' failed - cannot refresh available container templates; check network/Proxmox repo access and rerun"
+    return 1
+  fi
+
+  avail="$(pveam available 2>/dev/null \
+    | grep -oE 'ubuntu-22\.04-standard_[^[:space:]]+\.tar\.zst' \
+    | sort -uV)" || avail=""
+  archive="$(tail -n 1 <<< "${avail}")"
+  if [[ -z "${archive}" ]]; then
+    msg_error "no supported Ubuntu 22.04 standard template in 'pveam available' - cannot provision containers; check appliance repos and rerun"
+    return 1
+  fi
+
+  msg_info "downloading Ubuntu template ${archive}"
+  if ! pveam download local "${archive}" >/dev/null 2>&1; then
+    msg_error "'pveam download local ${archive}' failed - check storage space/repo access and rerun"
+    return 1
+  fi
+
+  found="local:vztmpl/${archive}"
+  local local_templates
+  local_templates="$(pveam list local 2>/dev/null)" || local_templates=""
+  if ! grep -F "vztmpl/${archive}" >/dev/null <<< "${local_templates}"; then
+    msg_error "template ${found} missing after download - aborting before deployment"
+    return 1
+  fi
+
+  SOC_TEMPLATE_CACHE["${storage}"]="${found}"
+  printf '%s\n' "${found}"
+}
