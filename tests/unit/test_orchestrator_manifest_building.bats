@@ -71,7 +71,7 @@ setup() {
   local manifest
   manifest="$(build_manifest)"
 
-  deploy_one misp "${manifest}" 1
+  deploy_one misp "${manifest}" 1 "local:vztmpl/ubuntu-22.04-standard_22.04-2_amd64.tar.zst"
 
   grep -q "ip=198.51.100.11/24" "${SOC_LOG_FILE}"
 }

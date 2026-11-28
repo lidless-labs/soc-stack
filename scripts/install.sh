@@ -499,12 +499,75 @@ warnings_json() {
   fi
 }
 
-# deploy_one <component> <manifest_json>
+# newest_template - select by archive version, preferring zst on equal versions.
+# Input is one matching archive name or storage volume per line.
+newest_template() {
+  awk 'NF {
+    count = split($0, path, "/")
+    split(path[count], archive, "_")
+    print archive[2] "\t" (path[count] ~ /[.]zst$/ ? 1 : 0) "\t" $0
+  }' | LC_ALL=C sort -k1,1V -k2,2n -k3,3 | tail -n 1 | cut -f3
+}
+
+# resolve_template <storage> - print one reusable Ubuntu 22.04 volume.
+# Called once by main, only when at least one component needs deployment.
+resolve_template() {
+  local storage="$1"
+  local template available archive volumes update_stderr update_stdout update_rc
+  template="$( { pveam list "${storage}" 2>/dev/null || true; } |
+    awk '$1 ~ /:vztmpl\/ubuntu-22[.]04-standard_.*_amd64[.]tar[.](zst|gz|xz)$/ {print $1}' |
+    newest_template)"
+  if [[ -z "${template}" && "${storage}" != "local" ]]; then
+    template="$( { pveam list local 2>/dev/null || true; } |
+      awk '$1 ~ /:vztmpl\/ubuntu-22[.]04-standard_.*_amd64[.]tar[.](zst|gz|xz)$/ {print $1}' |
+      newest_template)"
+  fi
+  if [[ -z "${template}" ]]; then
+    msg_info "refreshing Ubuntu 22.04 template index"
+    # pveam can report a refresh failure on stderr while returning success.
+    # Keep stdout visible and capture stderr independently of the exit status.
+    exec {update_stdout}>&2
+    update_rc=0
+    update_stderr="$(pveam update 2>&1 >&"${update_stdout}")" || update_rc=$?
+    exec {update_stdout}>&-
+    if (( update_rc != 0 )) || grep -qi 'update failed' <<< "${update_stderr}"; then
+      [[ -z "${update_stderr}" ]] || printf '%s\n' "${update_stderr}" >&2
+      msg_error "template index refresh failed"
+      return 1
+    fi
+    [[ -z "${update_stderr}" ]] || printf '%s\n' "${update_stderr}" >&2
+    if ! available="$(pveam available)"; then
+      msg_error "template catalog query failed"
+      return 1
+    fi
+    archive="$(awk '$1 == "system" && $2 ~ /^ubuntu-22[.]04-standard_.*_amd64[.]tar[.](zst|gz|xz)$/ {print $2}' <<< "${available}" |
+      newest_template)"
+    if [[ -z "${archive}" ]]; then
+      msg_error "no supported Ubuntu 22.04 template available"
+      return 1
+    fi
+    msg_info "downloading ${archive}"
+    if ! pveam download local "${archive}" >&2; then
+      msg_error "template download failed: ${archive}"
+      return 1
+    fi
+    template="local:vztmpl/${archive}"
+    if ! volumes="$(pveam list local)" ||
+       ! awk -v volume="${template}" '$1 == volume {found=1} END {exit !found}' <<< "${volumes}"; then
+      msg_error "downloaded template volume not found: ${template}"
+      return 1
+    fi
+  fi
+  printf '%s\n' "${template}"
+}
+
+# deploy_one <component> <manifest_json> <index> <template>
 # Returns 0 if deployed (or already-deployed), non-zero on failure.
 deploy_one() {
   local component="$1"
   local manifest="$2"
   local index="$3"
+  local template="$4"
 
   msg_info "==== ${component} ===="
 
@@ -543,19 +606,6 @@ deploy_one() {
       net_config+=",ip=${ip}"
       ;;
   esac
-
-  # Get template
-  local template
-  template="$(pveam list "${storage}" 2>/dev/null | awk '/ubuntu-22.04/{print $1; exit}')"
-  if [[ -z "${template}" ]]; then
-    template="$(pveam list local 2>/dev/null | awk '/ubuntu-22.04/{print $1; exit}')"
-  fi
-  if [[ -z "${template}" ]]; then
-    msg_info "downloading Ubuntu 22.04 template"
-    pveam update >/dev/null 2>&1 || true
-    pveam download local ubuntu-22.04-standard_22.04-1_amd64.tar.zst >/dev/null 2>&1 || true
-    template="local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
-  fi
 
   # Get LXC spec from component
   local spec_lines
@@ -755,11 +805,30 @@ main() {
   plan_dependency_warnings "${components_arr[@]}"
 
   local component
+  local pending_components=()
+  for component in "${components_arr[@]}"; do
+    if ! is_completed "${component}" || [[ "${OPT_FORCE}" == "1" ]]; then
+      pending_components+=("${component}")
+    fi
+  done
+
+  local template="" template_ok=1
+  if (( ${#pending_components[@]} > 0 )); then
+    local storage
+    storage="$(jq -r '.network.storage // "local-lvm"' <<< "${manifest}")"
+    if ! template="$(resolve_template "${storage}")"; then
+      template_ok=0
+    fi
+  fi
+
   local component_index=0
   local deploy_failures=0
   local deploy_successes=0
   for component in "${components_arr[@]}"; do
-    if deploy_one "${component}" "${manifest}" "${component_index}"; then
+    if [[ "${template_ok}" == "0" ]] && selection_has "${component}" "${pending_components[@]}"; then
+      state_set "${component}" status "failed"
+      deploy_failures=$((deploy_failures + 1))
+    elif deploy_one "${component}" "${manifest}" "${component_index}" "${template}"; then
       deploy_successes=$((deploy_successes + 1))
     else
       deploy_failures=$((deploy_failures + 1))

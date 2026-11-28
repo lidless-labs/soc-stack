@@ -22,6 +22,7 @@ All notable changes to soc-stack are documented in this file. Format follows [Ke
 - Bats coverage for the exit-code contract, integration state tracking, and IP allocation bounds (105 unit tests)
 
 ### Fixed
+- Unified installer resolves Ubuntu 22.04 templates once per deployment plan, tolerates storage without template content, detects index refresh failures reported on stderr, selects the newest supported archive with zst preferred on equal versions, and records affected components as failed in result JSON.
 - Exit-code contract: integration failures now produce exit 4/5 as documented; `integration.status` is tracked per component
 - `allocate_ip` bounds-checks the last octet instead of emitting invalid addresses
 - TheHive/MISP default-credential rotation is verified before a component reports deployed; idempotent re-runs refuse to report deployed with missing credentials
