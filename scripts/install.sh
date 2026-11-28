@@ -544,17 +544,38 @@ deploy_one() {
       ;;
   esac
 
-  # Get template
-  local template
-  template="$(pveam list "${storage}" 2>/dev/null | awk '/ubuntu-22.04/{print $1; exit}')"
+  # Reuse an installed template, otherwise resolve one from the current index.
+  local template available archive volumes
+  template="$(pveam list "${storage}" 2>/dev/null | awk '$1 ~ /:vztmpl\/ubuntu-22[.]04-standard_.*_amd64[.]tar[.](zst|gz|xz)$/ {print $1; exit}')"
   if [[ -z "${template}" ]]; then
-    template="$(pveam list local 2>/dev/null | awk '/ubuntu-22.04/{print $1; exit}')"
+    template="$(pveam list local 2>/dev/null | awk '$1 ~ /:vztmpl\/ubuntu-22[.]04-standard_.*_amd64[.]tar[.](zst|gz|xz)$/ {print $1; exit}')"
   fi
   if [[ -z "${template}" ]]; then
-    msg_info "downloading Ubuntu 22.04 template"
-    pveam update >/dev/null 2>&1 || true
-    pveam download local ubuntu-22.04-standard_22.04-1_amd64.tar.zst >/dev/null 2>&1 || true
-    template="local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
+    msg_info "refreshing Ubuntu 22.04 template index"
+    if ! pveam update; then
+      msg_error "${component}: template index refresh failed"
+      return 1
+    fi
+    if ! available="$(pveam available)"; then
+      msg_error "${component}: template catalog query failed"
+      return 1
+    fi
+    archive="$(awk '$1 == "system" && $2 ~ /^ubuntu-22[.]04-standard_.*_amd64[.]tar[.](zst|gz|xz)$/ {print $2; exit}' <<< "${available}")"
+    if [[ -z "${archive}" ]]; then
+      msg_error "${component}: no supported Ubuntu 22.04 template available"
+      return 1
+    fi
+    msg_info "downloading ${archive}"
+    if ! pveam download local "${archive}"; then
+      msg_error "${component}: template download failed: ${archive}"
+      return 1
+    fi
+    template="local:vztmpl/${archive}"
+    if ! volumes="$(pveam list local)" ||
+       ! awk -v volume="${template}" '$1 == volume {found=1} END {exit !found}' <<< "${volumes}"; then
+      msg_error "${component}: downloaded template volume not found: ${template}"
+      return 1
+    fi
   fi
 
   # Get LXC spec from component
